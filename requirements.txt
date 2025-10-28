@@ -1,8 +1,8 @@
 streamlit==1.29.0
-yfinance==0.2.37
+yfinance==0.2.38
 pandas==2.2.2
 numpy==1.26.4
 pandas_ta==0.3.14b0
-requests==2.31.0
+requests==2.32.3
 setuptools>=68.0.0
-wheel>=0.41.2
+wheel>=0.42.0
