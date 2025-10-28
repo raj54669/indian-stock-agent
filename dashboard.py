@@ -5,70 +5,106 @@ import pandas as pd
 import pandas_ta as ta
 import os
 import datetime
+import time
 
+# --- Page setup ---
 st.set_page_config(page_title="Indian Stock Monitor", layout="wide")
 st.title("📊 Indian Stock Live Monitor (EMA200 & RSI14)")
 
 WATCHLIST_PATH = "watchlist.txt"
 REFRESH_SECONDS = int(os.getenv("DASH_REFRESH", "60"))
 
+
+# --- Load Watchlist ---
 def load_watchlist():
     if not os.path.exists(WATCHLIST_PATH):
         return []
     with open(WATCHLIST_PATH) as f:
         return [l.strip() for l in f if l.strip() and not l.strip().startswith("#")]
 
+
+# --- Fetch Stock Data ---
 def fetch_stats(symbol):
-    # daily indicators
-    df = yf.download(symbol, period="1y", interval="1d", progress=False, threads=False)
-    if df.empty:
-        return None
-    df["EMA200"] = ta.ema(df["Close"], length=200)
-    df["RSI14"] = ta.rsi(df["Close"], length=14)
-    last_daily = df.iloc[-1]
-    ema200 = float(last_daily["EMA200"])
-    rsi14 = float(last_daily["RSI14"])
-    daily_close = float(last_daily["Close"])
-    # try intraday latest price
     try:
-        intr = yf.download(symbol, period="2d", interval="1m", progress=False, threads=False)
-        latest_close = float(intr["Close"].iloc[-1]) if (intr is not None and not intr.empty) else daily_close
-        price_time = intr.index[-1].to_pydatetime().strftime("%Y-%m-%d %H:%M:%S") if (intr is not None and not intr.empty) else df.index[-1].strftime("%Y-%m-%d")
-    except Exception:
-        latest_close = daily_close
-        price_time = df.index[-1].strftime("%Y-%m-%d")
+        # Fetch 1-year daily data
+        df = yf.download(symbol, period="1y", interval="1d", progress=False, threads=False)
+        if df.empty:
+            return None
 
-    near_ema = (0.98 * ema200) < latest_close < (1.02 * ema200)
-    rsi_ok = (30 < rsi14 < 40)
-    triggered = near_ema and rsi_ok
+        # Calculate indicators
+        df["EMA200"] = ta.ema(df["Close"], length=200)
+        df["RSI14"] = ta.rsi(df["Close"], length=14)
 
-    return {
-        "Symbol": symbol,
-        "Price": round(latest_close, 2),
-        "Price Time": price_time,
-        "EMA200": round(ema200, 2),
-        "RSI14": round(rsi14, 2),
-        "Near EMA?": "✅" if near_ema else "❌",
-        "RSI 30-40?": "✅" if rsi_ok else "❌",
-        "Triggered": "✅" if triggered else "❌"
-    }
+        last_daily = df.iloc[-1]
 
+        # Safely handle missing data
+        ema200_value = last_daily.get("EMA200", None)
+        rsi14_value = last_daily.get("RSI14", None)
+        close_value = last_daily.get("Close", None)
+
+        ema200 = float(ema200_value) if ema200_value is not None else 0.0
+        rsi14 = float(rsi14_value) if rsi14_value is not None else 0.0
+        daily_close = float(close_value) if close_value is not None else 0.0
+
+        # Try to get intraday (1-minute) latest price
+        try:
+            intr = yf.download(symbol, period="2d", interval="1m", progress=False, threads=False)
+            if intr is not None and not intr.empty:
+                latest_close = float(intr["Close"].iloc[-1])
+                price_time = intr.index[-1].to_pydatetime().strftime("%Y-%m-%d %H:%M:%S")
+            else:
+                latest_close = daily_close
+                price_time = df.index[-1].strftime("%Y-%m-%d")
+        except Exception:
+            latest_close = daily_close
+            price_time = df.index[-1].strftime("%Y-%m-%d")
+
+        # --- Conditions ---
+        near_ema = (0.98 * ema200) < latest_close < (1.02 * ema200)
+        rsi_ok = (30 < rsi14 < 40)
+        triggered = near_ema and rsi_ok
+
+        return {
+            "Symbol": symbol,
+            "Price": round(latest_close, 2),
+            "Price Time": price_time,
+            "EMA200": round(ema200, 2),
+            "RSI14": round(rsi14, 2),
+            "Near EMA?": "✅" if near_ema else "❌",
+            "RSI 30-40?": "✅" if rsi_ok else "❌",
+            "Triggered": "✅" if triggered else "❌"
+        }
+
+    except Exception as e:
+        return {"Symbol": symbol, "error": str(e)}
+
+
+# --- Main Dashboard ---
 watchlist = load_watchlist()
+
 if not watchlist:
-    st.warning("watchlist.txt is empty or not present in the repository.")
+    st.warning("⚠️ 'watchlist.txt' is empty or missing in the repository.")
 else:
     data = []
-    with st.spinner("Fetching data..."):
+    with st.spinner("Fetching stock data..."):
         for symbol in watchlist:
             stats = fetch_stats(symbol)
             if stats:
                 data.append(stats)
+
     if data:
         df = pd.DataFrame(data)
         st.dataframe(df, use_container_width=True)
     else:
-        st.write("No data to display.")
+        st.error("No valid stock data to display.")
 
-st.caption(f"Auto-refresh every {REFRESH_SECONDS} seconds. Last updated: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-# set auto-refresh using streamlit's experimental function
+
+# --- Footer ---
+st.caption(
+    f"⏱️ Auto-refresh every {REFRESH_SECONDS} seconds | "
+    f"Last updated: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+)
+
+# --- Gentle Auto-Refresh ---
+time.sleep(REFRESH_SECONDS)
 st.experimental_rerun()
