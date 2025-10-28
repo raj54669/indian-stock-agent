@@ -1,6 +1,6 @@
-streamlit==1.25.0
+streamlit==1.29.0
 yfinance==0.2.37
 pandas==2.2.2
 numpy==1.26.4
-pandas-ta==0.3.14b0
+pandas_ta==0.3.14b0
 requests==2.31.0
