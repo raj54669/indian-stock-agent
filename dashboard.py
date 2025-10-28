@@ -32,9 +32,8 @@ def load_watchlist(filename="watchlist.txt"):
 # -------------------------------
 def fetch_stats(symbol):
     try:
-        # Fetch 6 months of data (fast & sufficient)
-        df = yf.download(symbol, period="6mo", interval="1d", progress=False, threads=False)
-        if df.empty:
+        df = yf.download(symbol, period="1y", interval="1d", progress=False, threads=False)
+        if df is None or df.empty:
             return {"Symbol": symbol, "error": "No historical data"}
 
         # Compute indicators
@@ -42,19 +41,16 @@ def fetch_stats(symbol):
         df["RSI14"] = ta.rsi(df["Close"], length=14)
 
         last_row = df.iloc[-1]
-        ema200 = last_row.get("EMA200")
-        rsi14 = last_row.get("RSI14")
-        close_price = last_row.get("Close")
 
-        # Validate numbers
-        if any(pd.isna(x) for x in [ema200, rsi14, close_price]):
+        # Extract scalar values safely
+        ema200 = float(last_row["EMA200"]) if pd.notna(last_row["EMA200"]) else None
+        rsi14 = float(last_row["RSI14"]) if pd.notna(last_row["RSI14"]) else None
+        close_price = float(last_row["Close"]) if pd.notna(last_row["Close"]) else None
+
+        if ema200 is None or rsi14 is None or close_price is None:
             return {"Symbol": symbol, "error": "Insufficient data for EMA/RSI"}
 
-        ema200 = float(ema200)
-        rsi14 = float(rsi14)
-        close_price = float(close_price)
-
-        # Fetch recent 1-min price (optional quick check)
+        # Try intraday data
         try:
             intraday = yf.download(symbol, period="2d", interval="1m", progress=False, threads=False)
             if intraday is not None and not intraday.empty:
@@ -67,9 +63,9 @@ def fetch_stats(symbol):
             latest_close = close_price
             price_time = df.index[-1].strftime("%Y-%m-%d")
 
-        # Define triggers
-        near_ema = (0.98 * ema200) <= latest_close <= (1.02 * ema200)
-        rsi_ok = 30 <= rsi14 <= 40
+        # Logical checks (fixed: ensure we compare floats, not Series)
+        near_ema = (0.98 * ema200 <= latest_close <= 1.02 * ema200)
+        rsi_ok = (30 <= rsi14 <= 40)
         triggered = near_ema and rsi_ok
 
         return {
@@ -101,7 +97,7 @@ else:
         stats = fetch_stats(symbol)
         results.append(stats)
         progress.progress((i + 1) / len(watchlist))
-        time.sleep(0.5)  # small delay to prevent rate-limit issues
+        time.sleep(0.5)  # avoid rate limit
 
     df = pd.DataFrame(results)
 
