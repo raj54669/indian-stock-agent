@@ -26,27 +26,28 @@ def load_watchlist():
 # --- Fetch Stock Data ---
 def fetch_stats(symbol):
     try:
-        # Fetch 1-year daily data
+        # Fetch 1 year of daily data
         df = yf.download(symbol, period="1y", interval="1d", progress=False, threads=False)
         if df.empty:
-            return None
+            return {"Symbol": symbol, "error": "No daily data"}
 
-        # Calculate indicators
         df["EMA200"] = ta.ema(df["Close"], length=200)
         df["RSI14"] = ta.rsi(df["Close"], length=14)
-
         last_daily = df.iloc[-1]
 
-        # Safely handle missing data
-        ema200_value = last_daily.get("EMA200", None)
-        rsi14_value = last_daily.get("RSI14", None)
-        close_value = last_daily.get("Close", None)
+        ema200_value = last_daily.get("EMA200")
+        rsi_value = last_daily.get("RSI14")
+        daily_close = last_daily.get("Close")
 
-        ema200 = float(ema200_value) if ema200_value is not None else 0.0
-        rsi14 = float(rsi14_value) if rsi14_value is not None else 0.0
-        daily_close = float(close_value) if close_value is not None else 0.0
+        # Skip if any are None
+        if ema200_value is None or rsi_value is None or daily_close is None:
+            return {"Symbol": symbol, "error": "Missing indicator values"}
 
-        # Try to get intraday (1-minute) latest price
+        ema200 = float(ema200_value)
+        rsi14 = float(rsi_value)
+        daily_close = float(daily_close)
+
+        # Try fetching latest intraday price
         try:
             intr = yf.download(symbol, period="2d", interval="1m", progress=False, threads=False)
             if intr is not None and not intr.empty:
@@ -59,7 +60,7 @@ def fetch_stats(symbol):
             latest_close = daily_close
             price_time = df.index[-1].strftime("%Y-%m-%d")
 
-        # --- Conditions ---
+        # Conditions
         near_ema = (0.98 * ema200) < latest_close < (1.02 * ema200)
         rsi_ok = (30 < rsi14 < 40)
         triggered = near_ema and rsi_ok
@@ -77,6 +78,7 @@ def fetch_stats(symbol):
 
     except Exception as e:
         return {"Symbol": symbol, "error": str(e)}
+
 
 
 # --- Main Dashboard ---
