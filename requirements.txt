@@ -1,6 +1,5 @@
-streamlit
-yfinance
-pandas
-pandas_ta
-requests
-python-dateutil
+streamlit==1.25.0
+yfinance==0.2.28
+pandas==2.2.2
+pandas_ta==0.3.14b0
+requests==2.31.0
