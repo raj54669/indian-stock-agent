@@ -1,0 +1,6 @@
+streamlit
+yfinance
+pandas
+pandas_ta
+requests
+python-dateutil
