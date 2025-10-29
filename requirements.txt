@@ -1,6 +1,6 @@
 streamlit==1.29.0
 yfinance==0.2.37
 pandas==2.0.3
-pandas_ta==0.3.14b0
+pandas_ta==0.4.7b0
 requests
 openpyxl
