@@ -2,5 +2,5 @@ streamlit==1.29.0
 yfinance==0.2.37
 pandas==2.0.3
 numpy==1.24.3
-pandas_ta==0.3.14b
+git+https://github.com/twopirllc/pandas-ta.git@main#egg=pandas_ta
 requests==2.31.0
