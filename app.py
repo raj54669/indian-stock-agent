@@ -1,141 +1,189 @@
 import streamlit as st
 import pandas as pd
 import yfinance as yf
-import ta
 import time
 import io
-import base64
-import os
-import requests
 from github import Github
+import requests
 
-# ---------- Load secrets ----------
-TELEGRAM_TOKEN = st.secrets["telegram"]["TELEGRAM_TOKEN"]
-CHAT_ID = st.secrets["telegram"]["CHAT_ID"]
+# ----------------------------
+# 🔐 Load credentials from Streamlit secrets
+# ----------------------------
+try:
+    TELEGRAM_TOKEN = st.secrets["telegram"]["TELEGRAM_TOKEN"]
+    CHAT_ID = st.secrets["telegram"]["CHAT_ID"]
 
-GITHUB_TOKEN = st.secrets["github"]["GITHUB_TOKEN"]
-GITHUB_REPO_NAME = st.secrets["github"]["GITHUB_REPO"]
-GITHUB_BRANCH = "main"
+    GITHUB_TOKEN = st.secrets["github"]["GITHUB_TOKEN"]
+    GITHUB_REPO_NAME = st.secrets["github"]["GITHUB_REPO"]
+    GITHUB_BRANCH = st.secrets["github"].get("GITHUB_BRANCH", "main")
+    GITHUB_FILE_PATH = st.secrets["github"].get("GITHUB_FILE_PATH", "watchlist.xlsx")
 
-# ---------- GitHub Repo Initialization ----------
-GITHUB_REPO = None
-if GITHUB_TOKEN:
+    all_credentials_loaded = True
+except Exception as e:
+    all_credentials_loaded = False
+    st.error(f"Error loading credentials: {e}")
+
+# ----------------------------
+# 🎨 App layout
+# ----------------------------
+st.set_page_config(page_title="Indian Stock Auto Tracker", layout="wide")
+
+st.sidebar.header("⚙️ Settings")
+
+if all_credentials_loaded:
+    st.sidebar.success("All credentials loaded from app secrets.")
+else:
+    st.sidebar.error("Missing credentials — please check Streamlit secrets!")
+
+# ----------------------------
+# 🧠 GitHub Helper Functions
+# ----------------------------
+def init_github_repo():
+    """Initialize GitHub connection"""
     try:
         gh = Github(GITHUB_TOKEN)
-        GITHUB_REPO = gh.get_repo(GITHUB_REPO_NAME)
+        repo = gh.get_repo(GITHUB_REPO_NAME)
+        return repo
     except Exception as e:
         st.warning(f"⚠️ GitHub repo init failed: {e}")
+        return None
 
-WATCHLIST_FILE = "watchlist.xlsx"
 
-# ---------- Telegram Helper ----------
-def send_telegram_message(message: str):
-    """Send Telegram notification message."""
+def load_excel_from_github(repo):
+    """Load the watchlist Excel file from GitHub"""
     try:
-        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-        data = {"chat_id": CHAT_ID, "text": message}
-        requests.post(url, data=data)
-    except Exception as e:
-        st.error(f"Telegram send failed: {e}")
-
-# ---------- GitHub Helpers ----------
-def load_excel_from_github():
-    """Load Excel file from GitHub repo."""
-    try:
-        contents = GITHUB_REPO.get_contents(WATCHLIST_FILE, ref=GITHUB_BRANCH)
-        decoded = base64.b64decode(contents.content)
-        df = pd.read_excel(io.BytesIO(decoded))
-        st.success(f"✅ Loaded {len(df)} symbols from GitHub.")
+        file_content = repo.get_contents(GITHUB_FILE_PATH, ref=GITHUB_BRANCH)
+        file_bytes = file_content.decoded_content
+        df = pd.read_excel(io.BytesIO(file_bytes))
         return df
     except Exception as e:
         st.warning(f"⚠️ Error loading from GitHub: {e}")
         return None
 
 
-def upload_excel_to_github(file_data):
-    """Upload or update Excel file in GitHub repo."""
+def upload_excel_to_github(repo, file_bytes):
+    """Replace the existing Excel file in GitHub with a new one"""
     try:
-        contents = GITHUB_REPO.get_contents(WATCHLIST_FILE, ref=GITHUB_BRANCH)
-        sha = contents.sha
-        GITHUB_REPO.update_file(
-            WATCHLIST_FILE,
-            "Update watchlist.xlsx via Streamlit",
-            file_data.getvalue(),
-            sha,
-            branch=GITHUB_BRANCH,
+        contents = repo.get_contents(GITHUB_FILE_PATH, ref=GITHUB_BRANCH)
+        repo.update_file(
+            path=GITHUB_FILE_PATH,
+            message="Updated watchlist via Streamlit app",
+            content=file_bytes,
+            sha=contents.sha,
+            branch=GITHUB_BRANCH
         )
-        st.success("✅ Updated watchlist.xlsx in GitHub.")
-    except Exception:
-        try:
-            GITHUB_REPO.create_file(
-                WATCHLIST_FILE,
-                "Add watchlist.xlsx via Streamlit",
-                file_data.getvalue(),
-                branch=GITHUB_BRANCH,
-            )
-            st.success("✅ Uploaded new watchlist.xlsx to GitHub.")
-        except Exception as e:
-            st.error(f"❌ GitHub upload failed: {e}")
-
-
-# ---------- RSI + EMA Logic ----------
-def check_stock_conditions(symbol):
-    """Check if stock meets RSI and EMA proximity conditions."""
-    try:
-        data = yf.download(symbol, period="6mo", interval="1d", progress=False)
-        if data.empty:
-            return None
-
-        data["RSI"] = ta.momentum.RSIIndicator(data["Close"], window=14).rsi()
-        data["EMA200"] = ta.trend.EMAIndicator(data["Close"], window=200).ema_indicator()
-
-        last = data.iloc[-1]
-        price = last["Close"]
-        rsi = last["RSI"]
-        ema = last["EMA200"]
-
-        near_ema = ema * 0.98 <= price <= ema * 1.02
-        rsi_ok = 30 < rsi < 40
-
-        return {"Symbol": symbol, "Price": price, "RSI": rsi, "EMA200": ema, "NearEMA": near_ema, "RSI_OK": rsi_ok}
-
+        st.success("✅ Uploaded new file to GitHub successfully.")
     except Exception as e:
-        return {"Symbol": symbol, "Error": str(e)}
+        st.error(f"GitHub upload failed: {e}")
+
+# ----------------------------
+# 🤖 Telegram Helper
+# ----------------------------
+def send_telegram_message(message: str):
+    """Send a Telegram message"""
+    try:
+        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+        data = {"chat_id": CHAT_ID, "text": message}
+        requests.post(url, data=data)
+    except Exception as e:
+        st.warning(f"Telegram send failed: {e}")
+
+# ----------------------------
+# 📈 Stock Analysis Functions
+# ----------------------------
+def fetch_stock_data(symbol):
+    """Fetch stock data and calculate RSI & EMA"""
+    try:
+        df = yf.download(symbol, period="6mo", interval="1d", progress=False)
+        if df.empty:
+            return None
+        df["EMA200"] = df["Close"].ewm(span=200, adjust=False).mean()
+        delta = df["Close"].diff()
+        gain = (delta.where(delta > 0, 0)).rolling(14).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
+        rs = gain / loss
+        df["RSI"] = 100 - (100 / (1 + rs))
+        return df
+    except Exception as e:
+        st.warning(f"⚠️ Error fetching data for {symbol}: {e}")
+        return None
 
 
-# ---------- Streamlit UI ----------
-st.sidebar.header("⚙️ Settings")
-st.sidebar.success("All credentials loaded from app secrets.")
+def check_conditions(df):
+    """Check if RSI and EMA conditions are met"""
+    latest = df.iloc[-1]
+    price = latest["Close"]
+    ema200 = latest["EMA200"]
+    rsi = latest["RSI"]
 
-uploaded = st.sidebar.file_uploader("Upload new watchlist (.xlsx)", type=["xlsx"])
+    near_ema = ema200 * 0.98 <= price <= ema200 * 1.02
+    rsi_ok = 30 <= rsi <= 40
 
-if uploaded:
-    upload_excel_to_github(uploaded)
-    df = pd.read_excel(uploaded)
-else:
-    df = load_excel_from_github()
+    return near_ema and rsi_ok, price, ema200, rsi
 
-st.title("📈 Indian Stock Auto Tracker (EMA + RSI Alert Bot)")
+# ----------------------------
+# 🚀 Main App
+# ----------------------------
+st.title("🇮🇳 Indian Stock Auto Tracker (EMA + RSI Alert Bot)")
+st.markdown(
+    """
+    Automatically tracks Indian stocks using **RSI (30–40)** and **200-day EMA (±2%)**.  
+    Updates every minute and sends Telegram alerts when both conditions meet.
+    """
+)
 
-if df is not None and "Symbol" in df.columns:
-    results = []
-    progress = st.progress(0)
-    total = len(df)
+repo = init_github_repo()
 
-    for i, row in enumerate(df.itertuples(), start=1):
-        res = check_stock_conditions(row.Symbol)
-        if res:
-            results.append(res)
-        progress.progress(i / total)
+# ---- Load from GitHub first ----
+df_watchlist = load_excel_from_github(repo) if repo else None
 
-    results_df = pd.DataFrame(results)
-    st.dataframe(results_df)
+# ---- Sidebar Upload Option ----
+st.sidebar.subheader("📤 Upload new watchlist (.xlsx)")
+uploaded_file = st.sidebar.file_uploader(
+    "Drag and drop file here", type=["xlsx"], label_visibility="collapsed"
+)
 
-    triggered = results_df[(results_df["NearEMA"]) & (results_df["RSI_OK"])]
-    if not triggered.empty:
-        msg = "🚨 Stock Alert 🚨\n" + "\n".join(triggered["Symbol"])
-        send_telegram_message(msg)
-        st.success("Telegram alert sent!")
+if uploaded_file and repo:
+    upload_excel_to_github(repo, uploaded_file.getvalue())
+    df_watchlist = pd.read_excel(uploaded_file)
 
-else:
+# ---- Validate Excel ----
+if df_watchlist is None or "Symbol" not in df_watchlist.columns:
     st.warning("⚠️ No valid Excel found. Please upload one with a 'Symbol' column.")
+    st.stop()
+
+st.success(f"Loaded {len(df_watchlist)} stocks. Tracking started...")
+
+# ----------------------------
+# 🧾 Dashboard Table
+# ----------------------------
+results = []
+for symbol in df_watchlist["Symbol"]:
+    data = fetch_stock_data(symbol)
+    if data is not None:
+        condition_met, price, ema, rsi = check_conditions(data)
+        results.append({
+            "Symbol": symbol,
+            "Price": round(price, 2),
+            "EMA200": round(ema, 2),
+            "RSI": round(rsi, 2),
+            "Alert": "✅ YES" if condition_met else "—"
+        })
+        if condition_met:
+            send_telegram_message(f"📊 {symbol}: Price near EMA200 ({ema:.2f}), RSI={rsi:.1f}")
+
+if results:
+    df_results = pd.DataFrame(results)
+    st.dataframe(df_results, use_container_width=True)
+else:
+    st.warning("No stock data retrieved.")
+
+# ----------------------------
+# 🔁 Auto-refresh
+# ----------------------------
+auto = st.sidebar.checkbox("Run Auto Tracking (updates every 1 minute)")
+
+if auto:
+    with st.spinner("Tracking live..."):
+        time.sleep(60)
+        st.rerun()
