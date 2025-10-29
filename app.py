@@ -2,104 +2,130 @@ import streamlit as st
 import pandas as pd
 import yfinance as yf
 import ta
-import time
-import os
 import requests
-from datetime import datetime
+import time
+from io import BytesIO
 
-# -------------------------------------
-# Page Configuration
-# -------------------------------------
-st.set_page_config(
-    page_title="Indian Stock Auto Tracker",
-    page_icon="📈",
-    layout="wide"
-)
-
+# ------------------------------
+# Streamlit Config
+# ------------------------------
+st.set_page_config(page_title="Indian Stock Auto Tracker", layout="wide", page_icon="📈")
 st.title("🇮🇳 Indian Stock Auto Tracker (EMA + RSI Alert Bot)")
-st.write("""
-Upload your **watchlist Excel file** (must contain a column named `Symbol` with stock tickers like `RELIANCE.NS`).  
-The app will auto-check RSI (30–40) and price proximity to the 200-day EMA (±2%).  
-If both conditions meet, it will automatically send a Telegram alert.
+st.markdown("""
+Automatically track RSI (30–40) and 200-day EMA (±2%) for Indian stocks.  
+Updates every minute and sends Telegram alerts when both conditions meet.
 """)
 
-# -------------------------------------
-# Telegram Setup (using your secret keys)
-# -------------------------------------
+# ------------------------------
+# Load Secrets
+# ------------------------------
 try:
     TELEGRAM_TOKEN = st.secrets["TELEGRAM_TOKEN"]
     CHAT_ID = st.secrets["CHAT_ID"]
-    st.sidebar.success("✅ Telegram bot connected (from secrets)")
-except Exception:
-    st.sidebar.error("⚠️ Telegram credentials missing in secrets.toml!")
+    GITHUB_TOKEN = st.secrets["GITHUB_TOKEN"]
+    GITHUB_REPO = st.secrets["GITHUB_REPO"]
+    GITHUB_FILE_PATH = st.secrets["GITHUB_FILE_PATH"]
+    st.sidebar.success("✅ All credentials loaded")
+except Exception as e:
+    st.sidebar.error("⚠️ Missing secrets. Please check Streamlit secrets settings.")
+    st.stop()
 
+# ------------------------------
+# Telegram Function
+# ------------------------------
 def send_telegram_message(msg):
-    """Send Telegram notification"""
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    data = {"chat_id": CHAT_ID, "text": msg}
     try:
-        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-        data = {"chat_id": CHAT_ID, "text": msg}
         requests.post(url, data=data)
     except Exception as e:
         st.sidebar.error(f"Telegram error: {e}")
 
-# -------------------------------------
-# Sidebar Settings
-# -------------------------------------
-st.sidebar.header("⚙️ App Settings")
-
-default_path = "watchlist.xlsx"
-df = pd.DataFrame()
-
-# Load existing Excel if available
-if os.path.exists(default_path):
+# ------------------------------
+# GitHub Functions
+# ------------------------------
+def load_excel_from_github():
+    """Download the Excel watchlist file from GitHub"""
     try:
-        df = pd.read_excel(default_path)
-        st.sidebar.success(f"Loaded default watchlist with {len(df)} stocks.")
-    except Exception:
-        st.sidebar.warning("Could not read default watchlist.xlsx.")
+        url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{GITHUB_FILE_PATH}"
+        headers = {"Authorization": f"token {GITHUB_TOKEN}"}
+        res = requests.get(url, headers=headers)
+        res.raise_for_status()
+        content = res.json()["content"]
+        import base64
+        file_bytes = BytesIO(base64.b64decode(content))
+        df = pd.read_excel(file_bytes)
+        return df
+    except Exception as e:
+        st.error(f"Error loading from GitHub: {e}")
+        return pd.DataFrame()
 
-# Upload new Excel (replaces existing)
-uploaded_file = st.sidebar.file_uploader("📂 Upload new watchlist (.xlsx)", type=["xlsx"])
-if uploaded_file:
-    df = pd.read_excel(uploaded_file)
-    df.to_excel(default_path, index=False)
-    st.sidebar.success(f"✅ Replaced watchlist with {len(df)} stocks.")
+def upload_excel_to_github(file_data):
+    """Upload (replace) Excel file to GitHub repo"""
+    try:
+        url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{GITHUB_FILE_PATH}"
+        headers = {"Authorization": f"token {GITHUB_TOKEN}"}
+        get_res = requests.get(url, headers=headers)
+        sha = get_res.json().get("sha")
 
-# -------------------------------------
-# Helper function for stock data
-# -------------------------------------
+        import base64
+        content_b64 = base64.b64encode(file_data.read()).decode("utf-8")
+        data = {
+            "message": "Update watchlist.xlsx via Streamlit app",
+            "content": content_b64,
+            "sha": sha
+        }
+        put_res = requests.put(url, headers=headers, json=data)
+        put_res.raise_for_status()
+        st.sidebar.success("✅ Uploaded new watchlist to GitHub successfully.")
+    except Exception as e:
+        st.sidebar.error(f"GitHub upload error: {e}")
+
+# ------------------------------
+# Stock Tracking Function
+# ------------------------------
 def fetch_stock_data(symbol):
-    """Fetch EMA, RSI, and current price"""
     try:
         data = yf.download(symbol, period="1y", interval="1d", progress=False)
         data["EMA_200"] = ta.trend.EMAIndicator(data["Close"], window=200).ema_indicator()
         data["RSI"] = ta.momentum.RSIIndicator(data["Close"], window=14).rsi()
-
         latest = data.iloc[-1]
+
         price = latest["Close"]
         ema = latest["EMA_200"]
         rsi = latest["RSI"]
-        ema_proximity = ((price - ema) / ema) * 100
-
-        condition = (30 < rsi < 40) and (abs(ema_proximity) <= 2)
+        ema_diff = ((price - ema) / ema) * 100
+        meets_condition = (30 < rsi < 40) and (abs(ema_diff) <= 2)
 
         return {
             "Symbol": symbol,
             "Close": round(price, 2),
             "EMA_200": round(ema, 2),
             "RSI": round(rsi, 2),
-            "EMA_Proximity(%)": round(ema_proximity, 2),
-            "Signal": "✅ Meets Criteria" if condition else "❌ No Signal"
+            "EMA Diff (%)": round(ema_diff, 2),
+            "Signal": "✅ Meets Criteria" if meets_condition else "❌ No Signal"
         }
     except Exception as e:
         return {"Symbol": symbol, "Error": str(e)}
 
-# -------------------------------------
+# ------------------------------
+# Sidebar Controls
+# ------------------------------
+st.sidebar.header("⚙️ Settings")
+
+uploaded_file = st.sidebar.file_uploader("📂 Upload new watchlist (.xlsx)", type=["xlsx"])
+if uploaded_file:
+    upload_excel_to_github(uploaded_file)
+    df = pd.read_excel(uploaded_file)
+else:
+    df = load_excel_from_github()
+
+# ------------------------------
 # Dashboard
-# -------------------------------------
+# ------------------------------
 if not df.empty and "Symbol" in df.columns:
     symbols = df["Symbol"].dropna().tolist()
-    st.success(f"Loaded {len(symbols)} stocks. Tracking started.")
+    st.success(f"Tracking {len(symbols)} stocks from GitHub watchlist")
 
     run_auto = st.checkbox("🔄 Run Auto Tracking (updates every 1 minute)")
     placeholder = st.empty()
@@ -110,15 +136,20 @@ if not df.empty and "Symbol" in df.columns:
             result = fetch_stock_data(sym)
             results.append(result)
             if result.get("Signal") == "✅ Meets Criteria":
-                message = f"📈 {sym} - RSI: {result['RSI']}, EMA Diff: {result['EMA_Proximity(%)']}% ✅ Meets Conditions!"
-                send_telegram_message(message)
+                msg = (
+                    f"📈 {sym}\n"
+                    f"RSI: {result['RSI']}\n"
+                    f"EMA Diff: {result['EMA Diff (%)']}%\n"
+                    f"Condition: ✅ Meets Criteria"
+                )
+                send_telegram_message(msg)
 
         result_df = pd.DataFrame(results)
         placeholder.dataframe(result_df, use_container_width=True)
 
+        st.sidebar.write(f"Last updated: {time.strftime('%H:%M:%S')}")
         if not run_auto:
             break
         time.sleep(60)
-
 else:
-    st.warning("⚠️ Please upload a valid Excel file with a column named 'Symbol'.")
+    st.warning("⚠️ No valid Excel found in GitHub. Please upload a file with a 'Symbol' column.")
