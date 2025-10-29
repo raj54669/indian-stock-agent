@@ -5,5 +5,6 @@ streamlit==1.29.0
 yfinance==0.2.37
 pandas==2.0.3
 numpy==1.24.3
-git+https://github.com/twopirllc/pandas-ta.git
+https://github.com/twopirllc/pandas-ta/archive/refs/heads/master.zip
+requests==2.31.0
 python-telegram-bot==20.3
