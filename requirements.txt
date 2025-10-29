@@ -1,4 +1,7 @@
 pip==24.0
+setuptools==68.2.2
+wheel==0.43.0
+
 streamlit==1.39.0
 yfinance==0.2.43
 pandas==2.2.3
