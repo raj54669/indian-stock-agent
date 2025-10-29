@@ -1,6 +1,7 @@
-streamlit==1.29.0
-yfinance==0.2.37
-pandas==2.0.3
-pandas_ta==0.4.7b0
-requests
-openpyxl
+streamlit==1.39.0
+pandas==2.2.3
+numpy==1.26.4
+yfinance==0.2.40
+requests==2.31.0
+ta==0.10.2
+python-telegram-bot==20.3
