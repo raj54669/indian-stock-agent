@@ -2,150 +2,184 @@ import streamlit as st
 import pandas as pd
 import yfinance as yf
 import io
-import requests
-import ta
 from github import Github
+import requests
+import time
 
-st.set_page_config(page_title="Indian Stock Auto Tracker (EMA + RSI Alert Bot)", page_icon="📈", layout="wide")
+# ============================================================
+# 🔐 1. Load Secrets (flat TOML style)
+# ============================================================
+TELEGRAM_TOKEN = st.secrets["TELEGRAM_TOKEN"]
+CHAT_ID = st.secrets["CHAT_ID"]
+GITHUB_TOKEN = st.secrets["GITHUB_TOKEN"]
+GITHUB_REPO = st.secrets["GITHUB_REPO"]
+GITHUB_FILE_PATH = st.secrets["GITHUB_FILE_PATH"]
 
-# ------------------ Load secrets safely ------------------
+# ============================================================
+# ⚙️ 2. Initialize GitHub Connection
+# ============================================================
 try:
-    TELEGRAM_TOKEN = st.secrets["telegram"]["TELEGRAM_TOKEN"]
-    CHAT_ID = st.secrets["telegram"]["CHAT_ID"]
-    GITHUB_TOKEN = st.secrets["github"]["GITHUB_TOKEN"]
-    GITHUB_REPO = st.secrets["github"]["GITHUB_REPO"]
-    GITHUB_FILE_PATH = st.secrets["github"]["GITHUB_FILE_PATH"]
+    g = Github(GITHUB_TOKEN)
+    repo = g.get_repo(GITHUB_REPO)
+    st.sidebar.success("GitHub configured")
 except Exception as e:
-    st.error("❌ Missing Streamlit secrets configuration.")
-    st.stop()
+    repo = None
+    st.sidebar.error(f"GitHub connection failed: {e}")
 
-# ------------------ GitHub setup ------------------
-repo = None
-try:
-    gh = Github(GITHUB_TOKEN)
-    repo = gh.get_repo(GITHUB_REPO)
-except Exception as e:
-    st.warning(f"⚠️ GitHub repo init failed: {e}")
-
-# ------------------ Helper functions ------------------
-def send_telegram_message(msg):
+# ============================================================
+# 💬 3. Telegram Functions
+# ============================================================
+def send_telegram_message(message):
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-        payload = {"chat_id": CHAT_ID, "text": msg}
-        requests.post(url, data=payload)
+        params = {"chat_id": CHAT_ID, "text": message}
+        response = requests.get(url, params=params)
+        if response.status_code == 200:
+            st.sidebar.success("Telegram alert sent ✅")
+        else:
+            st.sidebar.warning("Failed to send Telegram message")
     except Exception as e:
-        st.warning(f"⚠️ Telegram send failed: {e}")
+        st.sidebar.error(f"Telegram error: {e}")
 
-def load_watchlist_from_github():
+# ============================================================
+# 📂 4. Load Watchlist from GitHub
+# ============================================================
+@st.cache_data(ttl=300)
+def load_watchlist():
+    if not repo:
+        return None
     try:
-        file_content = repo.get_contents(GITHUB_FILE_PATH)
-        content = file_content.decoded_content
+        file = repo.get_contents(GITHUB_FILE_PATH)
+        content = file.decoded_content
         df = pd.read_excel(io.BytesIO(content))
         return df
     except Exception as e:
-        st.warning(f"⚠️ Could not load watchlist from GitHub: {e}")
-        return pd.DataFrame(columns=["Symbol"])
-
-def upload_watchlist_to_github(uploaded_file):
-    try:
-        file_bytes = uploaded_file.getvalue()
-        existing_file = None
-        try:
-            existing_file = repo.get_contents(GITHUB_FILE_PATH)
-            repo.update_file(GITHUB_FILE_PATH, "update watchlist", file_bytes, existing_file.sha, branch="main")
-        except Exception:
-            repo.create_file(GITHUB_FILE_PATH, "create watchlist", file_bytes, branch="main")
-        st.success("✅ File uploaded to GitHub successfully!")
-    except Exception as e:
-        st.error(f"❌ Upload failed: {e}")
-
-def scan_stock(symbol):
-    try:
-        data = yf.download(symbol, period="6mo", progress=False)
-        if data.empty:
-            return None
-        data["EMA_200"] = ta.trend.EMAIndicator(data["Close"], window=200).ema_indicator()
-        data["RSI"] = ta.momentum.RSIIndicator(data["Close"], window=14).rsi()
-        last = data.iloc[-1]
-        return {
-            "Symbol": symbol,
-            "Close": round(last["Close"], 2),
-            "EMA_200": round(last["EMA_200"], 2),
-            "RSI": round(last["RSI"], 2)
-        }
-    except Exception:
+        st.warning(f"Could not load watchlist from GitHub: {e}")
         return None
 
-def run_scan(df):
-    results = []
-    for symbol in df["Symbol"]:
-        res = scan_stock(symbol)
-        if res:
-            results.append(res)
-    results_df = pd.DataFrame(results)
-    if not results_df.empty:
-        buy_signals = results_df[(results_df["RSI"] < 30) & (results_df["Close"] > results_df["EMA_200"])]
-        sell_signals = results_df[(results_df["RSI"] > 70) & (results_df["Close"] < results_df["EMA_200"])]
-        if not buy_signals.empty or not sell_signals.empty:
-            msg = "📊 *Stock Alert Update:*\n\n"
-            for _, row in buy_signals.iterrows():
-                msg += f"🟢 BUY: {row['Symbol']} | RSI={row['RSI']} | Close={row['Close']}\n"
-            for _, row in sell_signals.iterrows():
-                msg += f"🔴 SELL: {row['Symbol']} | RSI={row['RSI']} | Close={row['Close']}\n"
-            send_telegram_message(msg)
-        return results_df
-    return pd.DataFrame()
+# ============================================================
+# 📈 5. RSI and EMA Calculation
+# ============================================================
+def calculate_indicators(symbol):
+    try:
+        data = yf.download(symbol, period="6mo", interval="1d", progress=False)
+        if data.empty:
+            return None
 
-# ------------------ Streamlit UI ------------------
+        data["EMA_200"] = data["Close"].ewm(span=200, adjust=False).mean()
+        delta = data["Close"].diff()
+        gain = delta.where(delta > 0, 0)
+        loss = -delta.where(delta < 0, 0)
+        avg_gain = gain.rolling(14).mean()
+        avg_loss = loss.rolling(14).mean()
+        rs = avg_gain / avg_loss
+        data["RSI"] = 100 - (100 / (1 + rs))
+        return data
+    except Exception as e:
+        st.error(f"Error calculating indicators for {symbol}: {e}")
+        return None
+
+# ============================================================
+# 🧠 6. Analyze Signals
+# ============================================================
+def analyze_symbol(symbol):
+    data = calculate_indicators(symbol)
+    if data is None or data.empty:
+        return None
+
+    last = data.iloc[-1]
+    close, ema, rsi = last["Close"], last["EMA_200"], last["RSI"]
+    status = ""
+
+    if close > ema and rsi < 30:
+        status = "🔵 BUY Signal (RSI<30 & Close>EMA200)"
+    elif close < ema and rsi > 70:
+        status = "🔴 SELL Signal (RSI>70 & Close<EMA200)"
+    else:
+        status = "⚪ Neutral"
+
+    return {
+        "Symbol": symbol,
+        "Close": round(close, 2),
+        "EMA_200": round(ema, 2),
+        "RSI": round(rsi, 2),
+        "Signal": status,
+    }
+
+# ============================================================
+# 🧮 7. Streamlit UI
+# ============================================================
+st.set_page_config(page_title="Indian Stock Auto Tracker", layout="wide")
 st.title("📈 Indian Stock Auto Tracker (EMA + RSI Alert Bot)")
-st.caption("Automatically checks RSI(14) and 200-day EMA proximity for symbols in `watchlist.xlsx`")
 
 st.sidebar.header("⚙️ Settings")
 
-# Telegram Status
-if TELEGRAM_TOKEN and CHAT_ID:
+telegram_ok = bool(TELEGRAM_TOKEN and CHAT_ID)
+if telegram_ok:
     st.sidebar.success("✅ Telegram configured")
 else:
-    st.sidebar.warning("⚠️ Telegram secrets not set")
+    st.sidebar.warning("⚠️ Telegram secrets not set. Alerts disabled.")
 
-# GitHub Status
-if repo:
-    st.sidebar.success("✅ GitHub connected")
+github_ok = bool(GITHUB_TOKEN and GITHUB_REPO and GITHUB_FILE_PATH)
+if github_ok:
+    st.sidebar.success("✅ GitHub configured")
 else:
     st.sidebar.error("❌ GitHub token or repo not configured")
 
-# File Upload Section
-st.sidebar.subheader("📤 Upload new watchlist (.xlsx)")
-uploaded_file = st.sidebar.file_uploader("Choose a watchlist Excel file", type=["xlsx"])
-if uploaded_file is not None:
-    upload_watchlist_to_github(uploaded_file)
-    st.experimental_rerun()
+# ============================================================
+# 📊 8. Load Watchlist
+# ============================================================
+watchlist_df = load_watchlist()
 
-# Load Data
-df = load_watchlist_from_github()
-if df.empty:
-    st.warning("⚠️ No valid Excel found in GitHub. Please upload a file named `watchlist.xlsx` with a 'Symbol' column.")
-    st.markdown("#### Required format example:")
-    st.table(pd.DataFrame({"Symbol": ["RELIANCE.NS", "TCS.NS"]}))
+if watchlist_df is None or "Symbol" not in watchlist_df.columns:
+    st.warning("No valid Excel found in GitHub. Please upload a file named `watchlist.xlsx` with a 'Symbol' column.")
+    st.write("Example format:")
+    st.dataframe(pd.DataFrame({"Symbol": ["RELIANCE.NS", "TCS.NS"]}))
 else:
-    st.dataframe(df)
+    st.dataframe(watchlist_df)
 
-# Scan Controls
-st.header("🕹️ Controls")
-if st.button("Run Scan Now"):
-    st.info("🔍 Running scan...")
-    results = run_scan(df)
-    if results.empty:
-        st.warning("No data found or API issue.")
+# ============================================================
+# 🚀 9. Controls
+# ============================================================
+st.subheader("🧠 Controls")
+
+col1, col2 = st.columns([1, 2])
+with col1:
+    auto_interval = st.number_input("Auto scan interval (seconds)", value=60, step=10)
+with col2:
+    run_once = st.button("🔄 Run Scan Now")
+
+def run_scan():
+    if watchlist_df is None or "Symbol" not in watchlist_df.columns:
+        st.error("No valid symbols found.")
+        return
+
+    results = []
+    alerts = []
+    for symbol in watchlist_df["Symbol"]:
+        res = analyze_symbol(symbol)
+        if res:
+            results.append(res)
+            if "BUY" in res["Signal"] or "SELL" in res["Signal"]:
+                alerts.append(f"{res['Symbol']}: {res['Signal']} (RSI={res['RSI']}, Close={res['Close']})")
+
+    if results:
+        st.dataframe(pd.DataFrame(results))
+        if alerts and telegram_ok:
+            send_telegram_message("\n".join(alerts))
+        elif not alerts:
+            st.info("✅ No alerts generated.")
     else:
-        st.success("✅ Scan completed.")
-        st.dataframe(results)
+        st.warning("No data processed.")
 
-# Auto refresh (optional)
-auto_interval = st.number_input("Auto scan interval (seconds)", min_value=30, max_value=600, value=60)
-if st.checkbox("Enable Auto Tracking (loop in session)"):
-    import time
-    st.info("Running auto loop... stop with rerun.")
+if run_once:
+    run_scan()
+
+# ============================================================
+# 🔁 10. Auto Scan Loop (Not recommended for Streamlit Cloud)
+# ============================================================
+if st.checkbox("Enable auto scan (testing only, not 24/7)"):
+    st.info("Running auto-scan loop...")
     while True:
-        results = run_scan(df)
+        run_scan()
         time.sleep(auto_interval)
