@@ -7,112 +7,108 @@ import time
 import threading
 import pandas as pd
 
-# Function to send Telegram alerts
+# ───────────────────────────────
+# TELEGRAM ALERT FUNCTION
+# ───────────────────────────────
 def send_telegram_alert(message):
-    TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-    TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": message
-    }
-    response = requests.post(url, data=payload)
-    if response.status_code == 200:
-        print(f"Telegram alert sent: {message}")
-    else:
-        print("Failed to send Telegram alert.")
-
-# Function to fetch stock data and calculate EMA, RSI
-def get_stock_data(ticker):
-    stock = yf.Ticker(ticker)
-    data = stock.history(period="1y", interval="1d")  # 1 year of data
-    
-    # Calculate 200-day EMA
-    data['200_EMA'] = ta.ema(data['Close'], length=200)
-
-    # Calculate RSI (14-period)
-    data['RSI'] = ta.rsi(data['Close'], length=14)
-    
-    return data
-
-# Function to check conditions for EMA and RSI
-def check_conditions(ticker):
-    data = get_stock_data(ticker)
-
-    latest_price = data['Close'][-1]
-    ema200_value = data['200_EMA'][-1]
-    rsi_value = data['RSI'][-1]
-
-    # Condition 1: Price near 200-day EMA (within ±2%)
-    if (latest_price > (ema200_value * 0.98)) and (latest_price < (ema200_value * 1.02)):
-        ema_condition_met = True
-    else:
-        ema_condition_met = False
-
-    # Condition 2: RSI between 30 and 40
-    if 30 < rsi_value < 40:
-        rsi_condition_met = True
-    else:
-        rsi_condition_met = False
-
-    return ema_condition_met, rsi_condition_met, latest_price, ema200_value, rsi_value
-
-# Function to load watchlist from an Excel file
-def load_watchlist_from_excel(file_path="watchlist.xlsx"):
+    token = os.getenv("TELEGRAM_BOT_TOKEN")
+    chat_id = os.getenv("TELEGRAM_CHAT_ID")
+    if not token or not chat_id:
+        print("⚠️ Telegram credentials not set.")
+        return
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    payload = {"chat_id": chat_id, "text": message}
     try:
-        # Read the Excel file
-        df = pd.read_excel(file_path)
-        # Assuming the file has a column named 'Ticker' with stock symbols
-        watchlist = df['Ticker'].dropna().tolist()
-        return watchlist
+        r = requests.post(url, data=payload, timeout=10)
+        r.raise_for_status()
+        print(f"✅ Alert sent: {message}")
     except Exception as e:
-        print(f"Error loading watchlist: {e}")
+        print(f"❌ Telegram send failed: {e}")
+
+# ───────────────────────────────
+# INDICATOR CALCULATION
+# ───────────────────────────────
+def get_stock_data(ticker):
+    df = yf.download(ticker, period="1y", interval="1d", progress=False)
+    if df.empty:
+        return None
+    df["EMA200"] = ta.ema(df["Close"], length=200)
+    df["RSI"] = ta.rsi(df["Close"], length=14)
+    return df
+
+def check_conditions(ticker):
+    df = get_stock_data(ticker)
+    if df is None:
+        return None
+    latest = df.iloc[-1]
+    price = latest["Close"]
+    ema = latest["EMA200"]
+    rsi = latest["RSI"]
+
+    near_ema = ema * 0.98 < price < ema * 1.02
+    rsi_ok = 30 < rsi < 40
+    return near_ema, rsi_ok, price, ema, rsi
+
+# ───────────────────────────────
+# WATCHLIST LOADER
+# ───────────────────────────────
+def load_watchlist(path="watchlist.xlsx"):
+    try:
+        df = pd.read_excel(path)
+        return df["Ticker"].dropna().tolist()
+    except Exception as e:
+        print(f"⚠️ Cannot load watchlist: {e}")
         return []
 
-# Function to track multiple stocks from a watchlist
-def track_stock_from_watchlist():
-    # Load stock tickers from the watchlist Excel file
-    watchlist = load_watchlist_from_excel()
+# ───────────────────────────────
+# BACKGROUND TRACKER
+# ───────────────────────────────
+def track_stocks():
+    while True:
+        watchlist = load_watchlist()
+        if not watchlist:
+            print("⚠️ Watchlist empty.")
+        for symbol in watchlist:
+            res = check_conditions(symbol)
+            if not res:
+                continue
+            near_ema, rsi_ok, price, ema, rsi = res
+            if near_ema and rsi_ok:
+                msg = (f"🚨 {symbol}\nPrice ₹{price:.2f}\n"
+                       f"EMA200 ₹{ema:.2f}\nRSI {rsi:.2f}\n"
+                       f"✅ Price near 200 EMA & RSI 30-40")
+                send_telegram_alert(msg)
+            else:
+                print(f"{symbol}: no trigger.")
+        time.sleep(60)  # repeat every minute
 
-    if not watchlist:
-        print("No stocks in the watchlist.")
-        return
+def start_background_thread():
+    t = threading.Thread(target=track_stocks, daemon=True)
+    t.start()
 
-    for ticker in watchlist:
-        ema_condition_met, rsi_condition_met, latest_price, ema200_value, rsi_value = check_conditions(ticker)
-        
-        # Check if both conditions are met
-        if ema_condition_met and rsi_condition_met:
-            message = f"🚨 Alert: {ticker}\n" \
-                      f"Price: ${latest_price}\n" \
-                      f"200-day EMA: ${ema200_value}\n" \
-                      f"RSI: {rsi_value}\n" \
-                      "Conditions met: Price near EMA and RSI between 30-40."
-            send_telegram_alert(message)
-        else:
-            print(f"{ticker}: Conditions not met")
+# ───────────────────────────────
+# STREAMLIT UI
+# ───────────────────────────────
+st.set_page_config(page_title="📊 Indian Stock Monitor", layout="wide")
+st.title("📈 Indian Stock Monitor (EMA200 + RSI 14)")
 
-    time.sleep(60)  # Wait for a minute before checking again
+st.info("This app auto-tracks your Excel watchlist every minute "
+        "and sends Telegram alerts when both EMA and RSI conditions meet.")
 
-# Run this function to track stock every minute
-def start_tracking():
-    track_thread = threading.Thread(target=track_stock_from_watchlist)
-    track_thread.daemon = True  # Allow thread to exit when the main program exits
-    track_thread.start()
+if st.button("▶️ Start Monitoring"):
+    start_background_thread()
+    st.success("Monitoring started — alerts will appear in your Telegram bot!")
 
-# Streamlit interface
-st.title("📊 Stock Price Monitor")
+uploaded = st.file_uploader("Upload new watchlist (Excel with Ticker column)",
+                            type=["xlsx"])
+if uploaded:
+    df_up = pd.read_excel(uploaded)
+    df_up.to_excel("watchlist.xlsx", index=False)
+    st.success("✅ Watchlist updated.")
 
-ticker = st.text_input("Enter Stock Ticker", "AAPL")
-
-if ticker:
-    st.write(f"Tracking stock: {ticker}")
-    # Start the background task to track the stock price
-    start_tracking()
-
-# Display latest price and chart for input stock
-if ticker:
-    stock = yf.Ticker(ticker)
-    data = stock.history(period="1d", interval="1m")
-    st.line_chart(data['Close'])
+st.divider()
+st.subheader("Sample Chart Preview")
+sample = st.text_input("Enter Ticker (eg: RELIANCE.NS)", "RELIANCE.NS")
+if sample:
+    data = yf.download(sample, period="1mo", interval="1d", progress=False)
+    st.line_chart(data["Close"])
