@@ -1,10 +1,6 @@
-pip==23.3
-setuptools==65.5.0
-wheel==0.38.4
 streamlit==1.29.0
 yfinance==0.2.37
 pandas==2.0.3
 numpy==1.24.3
-https://github.com/twopirllc/pandas-ta/archive/refs/heads/master.zip
+git+https://github.com/twopirllc/pandas-ta.git
 requests==2.31.0
-python-telegram-bot==20.3
