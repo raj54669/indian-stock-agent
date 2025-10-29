@@ -1,122 +1,91 @@
 import streamlit as st
 import pandas as pd
 import yfinance as yf
-import pandas_ta as ta
-import datetime
-import requests
+import ta
 import time
+import requests
 
-# -------------------------------
-# Streamlit Page Config
-# -------------------------------
-st.set_page_config(page_title="📊 Indian Stock Monitor", layout="wide")
-st.title("📈 Indian Stock Auto Alert (EMA200 & RSI14)")
+# --- Streamlit Page Setup ---
+st.set_page_config(page_title="Indian Stock Agent", page_icon="📈", layout="wide")
+st.title("📊 Indian Stock Auto Tracker (EMA + RSI Alert Bot)")
 
-# -------------------------------
-# Load Secrets (Telegram)
-# -------------------------------
-TELEGRAM_BOT_TOKEN = st.secrets["TELEGRAM_BOT_TOKEN"]
-TELEGRAM_CHAT_ID = st.secrets["TELEGRAM_CHAT_ID"]
+st.write("""
+Upload your **watchlist Excel file** (must contain a column named `Symbol` with stock tickers like `RELIANCE.NS`).
+The app will auto-check RSI (30–40) and if price is within ±2% of 200-day EMA.
+""")
 
-# -------------------------------
-# Telegram Alert Function
-# -------------------------------
-def send_telegram_alert(message: str):
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message}
+# --- File Upload ---
+uploaded_file = st.file_uploader("Upload Watchlist Excel", type=["xlsx"])
+
+# --- Telegram Setup ---
+st.sidebar.header("🔔 Telegram Bot Settings")
+TELEGRAM_TOKEN = st.sidebar.text_input("Bot Token", type="password")
+CHAT_ID = st.sidebar.text_input("Chat ID")
+
+# --- Functions ---
+def analyze_stock(symbol):
     try:
-        requests.post(url, data=payload, timeout=10)
-    except Exception as e:
-        st.error(f"Telegram alert failed: {e}")
-
-# -------------------------------
-# Load Watchlist (Excel or Text)
-# -------------------------------
-def load_watchlist():
-    try:
-        # If Excel file present
-        df = pd.read_excel("watchlist.xlsx")
-        if "Symbol" in df.columns:
-            return df["Symbol"].dropna().tolist()
-    except Exception:
-        pass
-
-    # Fallback to text file
-    try:
-        with open("watchlist.txt") as f:
-            return [line.strip() for line in f if line.strip()]
-    except Exception:
-        return []
-
-# -------------------------------
-# Fetch Stock Data & Compute Indicators
-# -------------------------------
-def fetch_stats(symbol):
-    try:
-        df = yf.download(symbol, period="1y", interval="1d", progress=False)
+        df = yf.download(symbol, period="6mo", interval="1d", progress=False)
         if df.empty:
             return None
+        
+        df.dropna(inplace=True)
+        df['EMA_200'] = ta.trend.ema_indicator(df['Close'], window=200)
+        df['RSI'] = ta.momentum.rsi(df['Close'], window=14)
 
-        df["EMA200"] = ta.ema(df["Close"], length=200)
-        df["RSI14"] = ta.rsi(df["Close"], length=14)
+        latest = df.iloc[-1]
+        price = latest['Close']
+        ema = latest['EMA_200']
+        rsi = latest['RSI']
 
-        last = df.iloc[-1]
-        close = float(last["Close"])
-        ema200 = float(last["EMA200"])
-        rsi14 = float(last["RSI14"])
-
-        near_ema = (0.98 * ema200) < close < (1.02 * ema200)
-        rsi_ok = (30 < rsi14 < 40)
-        triggered = near_ema and rsi_ok
+        near_ema = (ema * 0.98) <= price <= (ema * 1.02)
+        rsi_ok = 30 <= rsi <= 40
 
         return {
             "Symbol": symbol,
-            "Price": round(close, 2),
-            "EMA200": round(ema200, 2),
-            "RSI14": round(rsi14, 2),
-            "Near EMA": near_ema,
-            "RSI 30-40": rsi_ok,
-            "Triggered": triggered
+            "Price": round(price, 2),
+            "EMA_200": round(ema, 2),
+            "RSI": round(rsi, 2),
+            "Near 200 EMA": near_ema,
+            "RSI Condition": rsi_ok,
+            "Alert": near_ema and rsi_ok
         }
     except Exception as e:
-        st.warning(f"Error fetching {symbol}: {e}")
-        return None
+        return {"Symbol": symbol, "Error": str(e)}
 
-# -------------------------------
-# Main App
-# -------------------------------
-watchlist = load_watchlist()
+def send_telegram_alert(token, chat_id, message):
+    try:
+        url = f"https://api.telegram.org/bot{token}/sendMessage"
+        payload = {"chat_id": chat_id, "text": message}
+        requests.post(url, data=payload)
+    except Exception as e:
+        st.sidebar.error(f"Telegram Error: {e}")
 
-if not watchlist:
-    st.error("⚠️ No watchlist found. Please upload watchlist.xlsx or watchlist.txt.")
+# --- Main Loop ---
+if uploaded_file is not None:
+    df = pd.read_excel(uploaded_file)
+    if "Symbol" not in df.columns:
+        st.error("Excel must contain a column named 'Symbol'.")
+    else:
+        st.success(f"Loaded {len(df)} stocks. Starting tracking...")
+
+        run_tracking = st.checkbox("Run Auto Tracking (updates every 1 minute)")
+        results_placeholder = st.empty()
+
+        while run_tracking:
+            results = []
+            for symbol in df["Symbol"]:
+                result = analyze_stock(symbol)
+                if result:
+                    results.append(result)
+                    if result.get("Alert"):
+                        msg = f"📢 ALERT: {symbol}\nPrice: {result['Price']}\nEMA200: {result['EMA_200']}\nRSI: {result['RSI']}"
+                        if TELEGRAM_TOKEN and CHAT_ID:
+                            send_telegram_alert(TELEGRAM_TOKEN, CHAT_ID, msg)
+            
+            results_df = pd.DataFrame(results)
+            results_placeholder.dataframe(results_df, use_container_width=True)
+            st.toast("Updated Stock Data ✅")
+            time.sleep(60)  # wait 1 minute
 else:
-    st.info(f"Tracking {len(watchlist)} stocks...")
-
-    data = []
-    for symbol in watchlist:
-        stats = fetch_stats(symbol)
-        if stats:
-            data.append(stats)
-            if stats["Triggered"]:
-                alert_msg = (
-                    f"📊 Trigger Alert!\n"
-                    f"Stock: {symbol}\n"
-                    f"Price: ₹{stats['Price']}\n"
-                    f"EMA200: {stats['EMA200']}\n"
-                    f"RSI14: {stats['RSI14']}\n"
-                    f"Time: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-                )
-                send_telegram_alert(alert_msg)
-
-    if data:
-        df = pd.DataFrame(data)
-        st.dataframe(df, use_container_width=True)
-
-st.caption(f"Last updated: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-
-# -------------------------------
-# Auto-refresh every 5 minutes
-# -------------------------------
-st.experimental_set_query_params(updated=str(datetime.datetime.now()))
-time.sleep(300)
-st.experimental_rerun()
+    st.info("Please upload your watchlist Excel file to begin.")
