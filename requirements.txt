@@ -6,4 +6,3 @@ pandas_ta==0.3.14b0
 requests==2.32.3
 setuptools>=68.0.0
 wheel>=0.43.0
-build>=1.2.1
