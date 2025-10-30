@@ -36,17 +36,47 @@ GITHUB_REPO_NAME = get_secret("GITHUB_REPO")
 GITHUB_BRANCH = get_secret("GITHUB_BRANCH", "main")
 GITHUB_FILE_PATH = get_secret("GITHUB_FILE_PATH", "watchlist.xlsx")
 
-# Setup GitHub connection
+# -----------------------
+# Debug & Connection Diagnostics
+# -----------------------
+st.sidebar.header("🔍 GitHub Diagnostics")
+
+# Show token length safely (no token content exposed)
+st.sidebar.write(f"Token length: {len(str(GITHUB_TOKEN)) if GITHUB_TOKEN else 'None'}")
+st.sidebar.write(f"Repo: {GITHUB_REPO_NAME or '❌ Not set'}")
+st.sidebar.write(f"Branch: {GITHUB_BRANCH}")
+st.sidebar.write(f"File path: {GITHUB_FILE_PATH}")
+
+# --- Direct REST test to GitHub ---
+try:
+    test = requests.get(
+        "https://api.github.com/user",
+        headers={"Authorization": f"Bearer {GITHUB_TOKEN}"},
+        timeout=8,
+    )
+    st.sidebar.write(f"Token test status: {test.status_code}")
+    if test.status_code != 200:
+        st.sidebar.write(test.json())
+    else:
+        j = test.json()
+        st.sidebar.success(f"Authenticated as: {j.get('login', 'Unknown')}")
+except Exception as e:
+    st.sidebar.error(f"Token check failed: {e}")
+
+# --- Try PyGithub connection ---
 GITHUB_REPO = None
 if GITHUB_TOKEN and GITHUB_REPO_NAME and HAS_PYGITHUB:
     try:
         gh = Github(GITHUB_TOKEN)
+        user = gh.get_user().login
+        st.sidebar.info(f"PyGithub Authenticated as: {user}")
+
         GITHUB_REPO = gh.get_repo(GITHUB_REPO_NAME)
-        st.sidebar.success(f"✅ Connected to GitHub repo: {GITHUB_REPO_NAME}")
+        st.sidebar.success(f"✅ Connected to repo: {GITHUB_REPO_NAME}")
     except Exception as e:
-        st.sidebar.error(f"⚠️ GitHub connection failed: {e}")
+        st.sidebar.error(f"⚠️ PyGithub connection failed: {e}")
 else:
-    st.sidebar.warning("GitHub token or PyGithub not available")
+    st.sidebar.warning("⚠️ GitHub token missing or PyGithub not installed")
 
 # -----------------------
 # Telegram Secrets
