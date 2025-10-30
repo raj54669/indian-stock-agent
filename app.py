@@ -113,7 +113,9 @@ def load_watchlist():
     try:
         owner, repo = GITHUB_REPO_NAME.split("/", 1)
         url = f"https://api.github.com/repos/{owner}/{repo}/contents/{GITHUB_FILE_PATH}"
-        headers = {"Authorization": f"token {GITHUB_TOKEN}", "Accept": "application/vnd.github.v3.raw"}
+        auth_scheme = "Bearer" if str(GITHUB_TOKEN).startswith("github_pat_") else "token"
+        headers = {"Authorization": f"{auth_scheme} {GITHUB_TOKEN}", "Accept": "application/vnd.github.v3.raw"}
+
         r = requests.get(url, headers=headers, timeout=10)
         if r.status_code == 200:
             return pd.read_excel(io.BytesIO(r.content))
