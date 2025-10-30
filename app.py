@@ -196,24 +196,24 @@ def calc_rsi_ema(symbol: str):
         df = yf.download(symbol, period="1y", interval="1d", progress=False)
         if df is None or df.empty:
             return None
-        if \"Close\" not in df.columns:
+        if "Close" not in df.columns:
             return None
 
-        df = df.dropna(subset=[\"Close\"])
+        df = df.dropna(subset=["Close"])
         if len(df) < 15:
             return None
 
-        df[\"EMA200\"] = df[\"Close\"].ewm(span=200, adjust=False).mean()
-        delta = df[\"Close\"].diff()
+        df["EMA200"] = df["Close"].ewm(span=200, adjust=False).mean()
+        delta = df["Close"].diff()
         gain = delta.clip(lower=0)
         loss = -delta.clip(upper=0)
         avg_gain = gain.rolling(window=14).mean()
         avg_loss = loss.rolling(window=14).mean()
         rs = avg_gain / avg_loss
-        df[\"RSI14\"] = 100 - (100 / (1 + rs))
+        df["RSI14"] = 100 - (100 / (1 + rs))
         return df
     except Exception as e:
-        st.error(f\"yfinance error for {symbol}: {e}\")
+        st.error(f"yfinance error for {symbol}: {e}")
         return None
 
 def analyze(symbol):
@@ -222,25 +222,25 @@ def analyze(symbol):
         return None
 
     last = df.iloc[-1]
-    close = float(last[\"Close\"])
-    ema200 = float(last[\"EMA200\"])
-    rsi = float(last[\"RSI14\"])
+    close = float(last["Close"])
+    ema200 = float(last["EMA200"])
+    rsi = float(last["RSI14"])
 
-    signal = \"Neutral\"
+    signal = "Neutral"
     # Adjust your logic: RSI between 30-40 + price within ±2% of EMA
     dist_pct = (close - ema200) / ema200 * 100 if ema200 else None
     if rsi >= 30 and rsi <= 40 and abs(dist_pct) <= 2:
-        signal = \"BUY\"
+        signal = "BUY"
     elif rsi > 60 and dist_pct and dist_pct > 2:
-        signal = \"SELL\"
+        signal = "SELL"
 
     return {
-        \"Symbol\": symbol,
-        \"Close\": round(close, 2),
-        \"EMA200\": round(ema200, 2),
-        \"RSI\": round(rsi, 2),
-        \"Dist%\": round(dist_pct, 2) if dist_pct is not None else None,
-        \"Signal\": signal
+        "Symbol": symbol,
+        "Close": round(close, 2),
+        "EMA200": round(ema200, 2),
+        "RSI": round(rsi, 2),
+        "Dist%": round(dist_pct, 2) if dist_pct is not None else None,
+        "Signal": signal
     }
 
 
@@ -262,38 +262,38 @@ with col2:
 # Main Scan Logic
 # -----------------------
 def run_scan_once():
-    if watchlist_df is None or \"Symbol\" not in watchlist_df.columns:
-        st.error(\"No watchlist available\")
+    if watchlist_df is None or "Symbol" not in watchlist_df.columns:
+        st.error("No watchlist available")
         return
-    symbols = watchlist_df[\"Symbol\"].dropna().astype(str).tolist()
+    symbols = watchlist_df["Symbol"].dropna().astype(str).tolist()
     results, alerts = [], []
 
-    with st.spinner(f\"Scanning {len(symbols)} symbols...\"):
+    with st.spinner(f"Scanning {len(symbols)} symbols..."):
         for s in symbols:
             # Diagnostic: print symbol being processed
-            st.write(f\"Processing symbol: {s}\")
+            st.write(f"Processing symbol: {s}")
             try:
                 r = analyze(s)
             except Exception as e:
-                st.error(f\"Error analyzing {s}: {e}\")
+                st.error(f"Error analyzing {s}: {e}")
                 r = None
             if r:
                 results.append(r)
-                if r[\"Signal\"] in (\"BUY\", \"SELL\"):
-                    alerts.append(f\"{r['Symbol']}: {r['Signal']} (RSI={r['RSI']}, Close={r['Close']})\")
+                if r["Signal"] in ("BUY", "SELL"):
+                    alerts.append(f"{r['Symbol']}: {r['Signal']} (RSI={r['RSI']}, Close={r['Close']})")
             else:
-                st.warning(f\"No result returned for {s}\")            
+                st.warning(f"No result returned for {s}")            
 
     if results:
         df_result = pd.DataFrame(results)
-        st.success(\"✅ Scan complete — results displayed below\")
+        st.success("✅ Scan complete — results displayed below")
         st.dataframe(df_result)
     else:
-        st.info(\"ℹ️ No valid results from scan\")
+        st.info("ℹ️ No valid results from scan")
 
     if alerts:
-        st.warning(\"⚡ Alerts:\n\" + \"\n\".join(alerts))
-        send_telegram(\"⚠️ Stock Alerts:\n\" + \"\n\".join(alerts))
+        st.warning("⚡ Alerts:\n" + "\n".join(alerts))
+        send_telegram("⚠️ Stock Alerts:\n" + "\n".join(alerts))
 
 if run_now:
     run_scan_once()
