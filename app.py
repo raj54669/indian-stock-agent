@@ -297,9 +297,9 @@ def run_scan_once():
         st.warning("⚡ Alerts:\n" + "\n".join(alerts))
         send_telegram("\n".join(alerts))
     if results:
-    df = pd.DataFrame(results)
-    st.success("✅ Scan complete ")
-    st.dataframe(df)
+        df = pd.DataFrame(results)
+        st.success("✅ Scan complete ")
+        st.dataframe(df)
 
 if run_now:
     run_scan_once()
