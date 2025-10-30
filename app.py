@@ -1,4 +1,5 @@
-# app.py – Indian Stock Auto Tracker (GitHub-connected, Nextbite-style)
+# app.py – Indian Stock Agent (100% REST-based GitHub connection, Nextbite-style)
+
 import streamlit as st
 import pandas as pd
 import yfinance as yf
@@ -6,23 +7,16 @@ import io
 import requests
 import time
 import os
-from typing import Optional
 from datetime import datetime
-
-# Optional PyGithub
-try:
-    from github import Github
-    HAS_PYGITHUB = True
-except Exception:
-    HAS_PYGITHUB = False
+from typing import Optional
 
 # -----------------------
 # Streamlit Config
 # -----------------------
-st.set_page_config(page_title="📈 Indian Stock Auto Tracker", layout="wide")
+st.set_page_config(page_title="📈 Indian Stock Agent – EMA + RSI Alert Bot", layout="wide")
 
 # -----------------------
-# Unified GitHub Secrets Loader (Nextbite style)
+# Unified Secrets Loader
 # -----------------------
 def get_secret(key: str, default=None):
     try:
@@ -31,59 +25,11 @@ def get_secret(key: str, default=None):
         return os.getenv(key, default)
 
 GITHUB_TOKEN = get_secret("GITHUB_TOKEN")
-GITHUB_REPO_NAME = get_secret("GITHUB_REPO")
+GITHUB_REPO = get_secret("GITHUB_REPO")
 GITHUB_BRANCH = get_secret("GITHUB_BRANCH", "main")
 GITHUB_FILE_PATH = get_secret("GITHUB_FILE_PATH", "watchlist.xlsx")
 
-# -----------------------
-# Debug & Connection Diagnostics
-# -----------------------
-st.sidebar.header("🔍 GitHub Diagnostics")
-
-st.sidebar.write(f"Token length: {len(str(GITHUB_TOKEN)) if GITHUB_TOKEN else 'None'}")
-st.sidebar.write(f"Repo: {GITHUB_REPO_NAME or '❌ Not set'}")
-st.sidebar.write(f"Branch: {GITHUB_BRANCH}")
-st.sidebar.write(f"File path: {GITHUB_FILE_PATH}")
-
-# --- Direct REST test to GitHub (fine-grained token friendly) ---
-try:
-    auth_scheme = "Bearer" if str(GITHUB_TOKEN).startswith("github_pat_") else "token"
-    headers = {
-        "Authorization": f"{auth_scheme} {GITHUB_TOKEN}",
-        "Accept": "application/vnd.github+json",
-        "User-Agent": "streamlit-app",
-        "X-GitHub-Api-Version": "2022-11-28"
-    }
-    test = requests.get("https://api.github.com/user", headers=headers, timeout=8)
-    st.sidebar.write(f"Token test status: {test.status_code}")
-    if test.status_code == 200:
-        j = test.json()
-        st.sidebar.success(f"Authenticated as: {j.get('login', 'Unknown')}")
-    else:
-        try:
-            st.sidebar.error(test.json())
-        except Exception:
-            st.sidebar.error(test.text)
-except Exception as e:
-    st.sidebar.error(f"Token check failed: {e}")
-
-# --- Try PyGithub connection ---
-GITHUB_REPO = None
-if GITHUB_TOKEN and GITHUB_REPO_NAME and HAS_PYGITHUB:
-    try:
-        gh = Github(GITHUB_TOKEN)
-        user = gh.get_user().login
-        st.sidebar.info(f"PyGithub Authenticated as: {user}")
-        GITHUB_REPO = gh.get_repo(GITHUB_REPO_NAME)
-        st.sidebar.success(f"✅ Connected to repo: {GITHUB_REPO_NAME}")
-    except Exception as e:
-        st.sidebar.error(f"⚠️ PyGithub connection failed: {e}")
-else:
-    st.sidebar.warning("⚠️ GitHub token missing or PyGithub not installed")
-
-# -----------------------
-# Telegram Secrets
-# -----------------------
+# Telegram settings
 def get_secret_section(key: str, section: Optional[str] = None, default=None):
     try:
         if section and section in st.secrets and key in st.secrets[section]:
@@ -96,83 +42,103 @@ TELEGRAM_TOKEN = get_secret_section("TELEGRAM_TOKEN", section="telegram")
 CHAT_ID = get_secret_section("CHAT_ID", section="telegram")
 
 # -----------------------
-# Sidebar Status
+# GitHub REST Connection Helpers
 # -----------------------
-st.sidebar.header("Settings")
-if TELEGRAM_TOKEN and CHAT_ID:
-    st.sidebar.success("Telegram configured ✅")
-else:
-    st.sidebar.warning("Telegram not set — alerts disabled")
+def github_headers():
+    auth_scheme = "Bearer" if str(GITHUB_TOKEN).startswith("github_pat_") else "token"
+    return {
+        "Authorization": f"{auth_scheme} {GITHUB_TOKEN}",
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "streamlit-indian-stock-agent",
+        "X-GitHub-Api-Version": "2022-11-28"
+    }
 
-if GITHUB_TOKEN and GITHUB_REPO_NAME:
-    st.sidebar.info("GitHub secrets present")
-else:
-    st.sidebar.error("GitHub credentials missing")
+def github_raw_headers():
+    auth_scheme = "Bearer" if str(GITHUB_TOKEN).startswith("github_pat_") else "token"
+    return {
+        "Authorization": f"{auth_scheme} {GITHUB_TOKEN}",
+        "Accept": "application/vnd.github.v3.raw",
+        "User-Agent": "streamlit-indian-stock-agent"
+    }
 
 # -----------------------
-# GitHub Helpers
+# Debug Sidebar
 # -----------------------
-def load_excel_from_github(repo, path, branch="main"):
+st.sidebar.header("🔍 GitHub Diagnostics")
+st.sidebar.write(f"Repo: {GITHUB_REPO or '❌ Not set'}")
+st.sidebar.write(f"Branch: {GITHUB_BRANCH}")
+st.sidebar.write(f"File path: {GITHUB_FILE_PATH}")
+st.sidebar.write(f"Token length: {len(str(GITHUB_TOKEN)) if GITHUB_TOKEN else 'None'}")
+
+# Test token directly via REST API
+if GITHUB_TOKEN:
     try:
-        file = repo.get_contents(path, ref=branch)
-        df = pd.read_excel(io.BytesIO(file.decoded_content))
-        return df
+        resp = requests.get("https://api.github.com/user", headers=github_headers(), timeout=8)
+        st.sidebar.write(f"Token test status: {resp.status_code}")
+        if resp.status_code == 200:
+            st.sidebar.success(f"Authenticated as: {resp.json().get('login', 'Unknown')}")
+        else:
+            st.sidebar.error(resp.json())
     except Exception as e:
-        st.warning(f"PyGithub load failed: {e}")
-        return pd.DataFrame()
-
-def save_excel_to_github(repo, path, df, branch="main", message="Update watchlist"):
-    """Save updated Excel back to GitHub"""
-    try:
-        file = repo.get_contents(path, ref=branch)
-        bytes_buf = io.BytesIO()
-        df.to_excel(bytes_buf, index=False)
-        repo.update_file(file.path, message, bytes_buf.getvalue(), file.sha, branch=branch)
-        st.success("✅ Watchlist updated on GitHub!")
-        st.cache_data.clear()
-    except Exception as e:
-        st.error(f"❌ Failed to save file: {e}")
+        st.sidebar.error(f"Token test failed: {e}")
+else:
+    st.sidebar.error("❌ No GitHub token found")
 
 # -----------------------
-# Load Watchlist (robust, fine-grained compatible)
+# Load Excel file from GitHub (REST)
 # -----------------------
 @st.cache_data(ttl=120)
-def load_watchlist(GITHUB_TOKEN, GITHUB_REPO_NAME, GITHUB_FILE_PATH, GITHUB_BRANCH):
-    df = pd.DataFrame()
-
-    # --- 1. Try PyGithub first ---
-    if GITHUB_TOKEN and HAS_PYGITHUB and GITHUB_REPO_NAME:
-        try:
-            gh = Github(GITHUB_TOKEN)
-            repo = gh.get_repo(GITHUB_REPO_NAME)
-            file = repo.get_contents(GITHUB_FILE_PATH, ref=GITHUB_BRANCH)
-            df = pd.read_excel(io.BytesIO(file.decoded_content))
-            return df
-        except Exception as e:
-            st.warning(f"PyGithub load failed: {e}")
-
-    # --- 2. Fallback to REST API (fine-grained safe headers) ---
+def load_excel_from_github():
     try:
-        owner, repo_name = GITHUB_REPO_NAME.split("/", 1)
-        auth_scheme = "Bearer" if str(GITHUB_TOKEN).startswith("github_pat_") else "token"
-        headers = {
-            "Authorization": f"{auth_scheme} {GITHUB_TOKEN}",
-            "Accept": "application/vnd.github.raw",
-            "User-Agent": "streamlit-app",
-            "X-GitHub-Api-Version": "2022-11-28"
-        }
-        url = f"https://api.github.com/repos/{owner}/{repo_name}/contents/{GITHUB_FILE_PATH}?ref={GITHUB_BRANCH}"
-        r = requests.get(url, headers=headers, timeout=10)
+        owner, repo = GITHUB_REPO.split("/", 1)
+        url = f"https://api.github.com/repos/{owner}/{repo}/contents/{GITHUB_FILE_PATH}?ref={GITHUB_BRANCH}"
+        r = requests.get(url, headers=github_raw_headers(), timeout=10)
         if r.status_code == 200:
             df = pd.read_excel(io.BytesIO(r.content))
+            return df
         else:
-            st.error(f"REST API load failed: {r.status_code} – {r.text}")
+            st.warning(f"GitHub file fetch failed: {r.status_code} – {r.text}")
     except Exception as e:
-        st.error(f"Fallback load failed: {e}")
+        st.error(f"Error loading from GitHub: {e}")
+    return pd.DataFrame()
 
-    return df
+# -----------------------
+# Save Excel to GitHub (REST)
+# -----------------------
+def save_excel_to_github(df, message="Update watchlist"):
+    try:
+        owner, repo = GITHUB_REPO.split("/", 1)
+        get_url = f"https://api.github.com/repos/{owner}/{repo}/contents/{GITHUB_FILE_PATH}"
+        get_resp = requests.get(get_url, headers=github_headers(), timeout=10)
+        sha = None
+        if get_resp.status_code == 200:
+            sha = get_resp.json().get("sha")
 
-watchlist_df = load_watchlist(GITHUB_TOKEN, GITHUB_REPO_NAME, GITHUB_FILE_PATH, GITHUB_BRANCH)
+        bytes_buf = io.BytesIO()
+        df.to_excel(bytes_buf, index=False)
+        encoded_content = bytes_buf.getvalue()
+
+        import base64
+        data = {
+            "message": message,
+            "branch": GITHUB_BRANCH,
+            "content": base64.b64encode(encoded_content).decode("utf-8"),
+        }
+        if sha:
+            data["sha"] = sha
+
+        put_resp = requests.put(get_url, headers=github_headers(), json=data, timeout=10)
+        if put_resp.status_code in (200, 201):
+            st.success("✅ File successfully saved to GitHub!")
+        else:
+            st.error(f"GitHub save failed: {put_resp.status_code} – {put_resp.text}")
+    except Exception as e:
+        st.error(f"Error saving to GitHub: {e}")
+
+# -----------------------
+# Load Watchlist
+# -----------------------
+watchlist_df = load_excel_from_github()
 
 # -----------------------
 # UI
@@ -194,9 +160,12 @@ def send_telegram(message: str):
     if not TELEGRAM_TOKEN or not CHAT_ID:
         st.error("Telegram not configured")
         return False
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     try:
-        r = requests.post(url, data={"chat_id": CHAT_ID, "text": message}, timeout=10)
+        r = requests.post(
+            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+            data={"chat_id": CHAT_ID, "text": message},
+            timeout=10,
+        )
         return r.status_code == 200
     except Exception as e:
         st.error(f"Telegram error: {e}")
@@ -236,7 +205,7 @@ def analyze(symbol):
         "Close": round(last["Close"], 2),
         "EMA200": round(last["EMA200"], 2),
         "RSI": round(last["RSI"], 2),
-        "Signal": signal
+        "Signal": signal,
     }
 
 # -----------------------
@@ -250,9 +219,12 @@ with col1:
     interval = st.number_input("Interval (sec)", value=60, step=10)
 with col2:
     st.write("Status:")
-    st.write(f"- GitHub Repo: {GITHUB_REPO_NAME or 'N/A'}")
+    st.write(f"- GitHub Repo: {GITHUB_REPO or 'N/A'}")
     st.write(f"- Token: {'✅' if GITHUB_TOKEN else '❌'}")
 
+# -----------------------
+# Main Scan Logic
+# -----------------------
 def run_scan_once():
     if watchlist_df is None or "Symbol" not in watchlist_df.columns:
         st.error("No watchlist available")
@@ -273,18 +245,10 @@ def run_scan_once():
         st.warning("⚡ Alerts:\n" + "\n".join(alerts))
         send_telegram("\n".join(alerts))
 
-    # Example: save scan summary to GitHub
-    if GITHUB_REPO and results:
+    if results:
         df = pd.DataFrame(results)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M")
-        save_path = f"scans/scan_{timestamp}.xlsx"
-        try:
-            bytes_buf = io.BytesIO()
-            df.to_excel(bytes_buf, index=False)
-            GITHUB_REPO.create_file(save_path, f"Add scan {timestamp}", bytes_buf.getvalue(), branch=GITHUB_BRANCH)
-            st.success(f"📤 Saved scan results to GitHub: {save_path}")
-        except Exception as e:
-            st.warning(f"GitHub save skipped: {e}")
+        save_excel_to_github(df, message=f"Add scan {timestamp}")
 
 if run_now:
     run_scan_once()
