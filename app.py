@@ -153,9 +153,29 @@ def save_excel_to_github(df, message="Update watchlist"):
         st.error(f"Error saving to GitHub: {e}")
 
 # -----------------------
-# Load Watchlist
+# Load Watchlist (with upload override)
 # -----------------------
-watchlist_df = load_excel_from_github()
+st.sidebar.header("📂 Watchlist Management")
+
+# Upload file option to override GitHub watchlist
+uploaded_file = st.sidebar.file_uploader("Upload new watchlist (Excel)", type=["xlsx"])
+use_uploaded = False
+
+if uploaded_file is not None:
+    try:
+        uploaded_watchlist = pd.read_excel(uploaded_file)
+        if "Symbol" not in uploaded_watchlist.columns:
+            st.sidebar.error("Uploaded file must contain a 'Symbol' column.")
+        else:
+            watchlist_df = uploaded_watchlist
+            use_uploaded = True
+            st.sidebar.success(f"✅ Using uploaded watchlist ({len(watchlist_df)} symbols)")
+    except Exception as e:
+        st.sidebar.error(f"Error reading uploaded file: {e}")
+
+if not use_uploaded:
+    watchlist_df = load_excel_from_github()
+    st.sidebar.info("Using GitHub watchlist as default source")
 
 # -----------------------
 # UI
@@ -276,11 +296,10 @@ def run_scan_once():
     if alerts:
         st.warning("⚡ Alerts:\n" + "\n".join(alerts))
         send_telegram("\n".join(alerts))
-
     if results:
-        df = pd.DataFrame(results)
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M")
-        save_excel_to_github(df, message=f"Add scan {timestamp}")
+    df = pd.DataFrame(results)
+    st.success("✅ Scan complete ")
+    st.dataframe(df)
 
 if run_now:
     run_scan_once()
