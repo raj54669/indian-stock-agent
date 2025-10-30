@@ -211,19 +211,28 @@ def analyze(symbol):
     df = calc_rsi_ema(symbol)
     if df is None or df.empty:
         return None
-    last = df.iloc[-1]
+
+    # Get the latest single row safely
+    last = df.iloc[-1].to_dict()
+
+    close = float(last.get("Close", 0))
+    ema200 = float(last.get("EMA200", 0))
+    rsi = float(last.get("RSI", 50))
+
     signal = "Neutral"
-    if last["Close"] > last["EMA200"] and last["RSI"] < 30:
+    if close > ema200 and rsi < 30:
         signal = "BUY"
-    elif last["Close"] < last["EMA200"] and last["RSI"] > 70:
+    elif close < ema200 and rsi > 70:
         signal = "SELL"
+
     return {
         "Symbol": symbol,
-        "Close": round(last["Close"], 2),
-        "EMA200": round(last["EMA200"], 2),
-        "RSI": round(last["RSI"], 2),
-        "Signal": signal,
+        "Close": round(close, 2),
+        "EMA200": round(ema200, 2),
+        "RSI": round(rsi, 2),
+        "Signal": signal
     }
+
 
 # -----------------------
 # Controls
