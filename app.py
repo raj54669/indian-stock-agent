@@ -62,31 +62,12 @@ def github_raw_headers():
     }
 
 # -----------------------
-# Debug Sidebar
+# Sidebar – Simplified
 # -----------------------
-st.sidebar.header("🔍 GitHub Diagnostics")
-st.sidebar.write(f"Repo: {GITHUB_REPO or '❌ Not set'}")
-st.sidebar.write(f"Branch: {GITHUB_BRANCH}")
-st.sidebar.write(f"File path: {GITHUB_FILE_PATH}")
-st.sidebar.write(f"Token length: {len(str(GITHUB_TOKEN)) if GITHUB_TOKEN else 'None'}")
 
-# Test token directly via REST API
-if GITHUB_TOKEN:
-    try:
-        resp = requests.get("https://api.github.com/user", headers=github_headers(), timeout=8)
-        st.sidebar.write(f"Token test status: {resp.status_code}")
-        if resp.status_code == 200:
-            st.sidebar.success(f"Authenticated as: {resp.json().get('login', 'Unknown')}")
-        else:
-            st.sidebar.error(resp.json())
-    except Exception as e:
-        st.sidebar.error(f"Token test failed: {e}")
-else:
-    st.sidebar.error("❌ No GitHub token found")
+st.sidebar.header("📂 Watchlist Management")
+uploaded_file = st.sidebar.file_uploader("Upload new watchlist (Excel)", type=["xlsx"])
 
-# -----------------------
-# Sidebar Status
-# -----------------------
 st.sidebar.header("Settings")
 
 # Telegram connection indicator
@@ -100,6 +81,7 @@ if GITHUB_TOKEN and GITHUB_REPO:
     st.sidebar.info("GitHub secrets present")
 else:
     st.sidebar.error("GitHub credentials missing")
+
 
 # -----------------------
 # Load Excel file from GitHub (REST)
