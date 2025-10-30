@@ -194,18 +194,24 @@ def send_telegram(message: str):
 def calc_rsi_ema(symbol: str):
     try:
         df = yf.download(symbol, period="6mo", interval="1d", progress=False)
+        if df is None or df.empty:
+            st.warning(f"⚠️ No data returned for {symbol}")
+            return None
+
+        if "Close" not in df.columns:
+            st.warning(f"⚠️ Missing Close column for {symbol}")
+            return None
+
+        df["EMA200"] = df["Close"].ewm(span=200, adjust=False).mean()
+        delta = df["Close"].diff()
+        gain, loss = delta.clip(lower=0), -delta.clip(upper=0)
+        avg_gain, avg_loss = gain.rolling(14).mean(), loss.rolling(14).mean()
+        rs = avg_gain / avg_loss
+        df["RSI"] = 100 - (100 / (1 + rs))
+        return df
     except Exception as e:
-        st.write(f"yfinance error for {symbol}: {e}")
+        st.error(f"yfinance error for {symbol}: {e}")
         return None
-    if df.empty:
-        return None
-    df["EMA200"] = df["Close"].ewm(span=200, adjust=False).mean()
-    delta = df["Close"].diff()
-    gain, loss = delta.clip(lower=0), -delta.clip(upper=0)
-    avg_gain, avg_loss = gain.rolling(14).mean(), loss.rolling(14).mean()
-    rs = avg_gain / avg_loss
-    df["RSI"] = 100 - (100 / (1 + rs))
-    return df
 
 def analyze(symbol):
     df = calc_rsi_ema(symbol)
