@@ -193,7 +193,7 @@ def send_telegram(message: str):
 # -----------------------
 def calc_rsi_ema(symbol: str):
     try:
-        df = yf.download(symbol, period=\"1y\", interval=\"1d\", progress=False)
+        df = yf.download(symbol, period="1y", interval="1d", progress=False)
         if df is None or df.empty:
             return None
         if \"Close\" not in df.columns:
