@@ -47,36 +47,29 @@ st.sidebar.write(f"Repo: {GITHUB_REPO_NAME or '❌ Not set'}")
 st.sidebar.write(f"Branch: {GITHUB_BRANCH}")
 st.sidebar.write(f"File path: {GITHUB_FILE_PATH}")
 
-# --- Direct REST test to GitHub ---
+# --- Direct REST test to GitHub (improved for fine-grained tokens) ---
 try:
-    test = requests.get(
-        "https://api.github.com/user",
-        headers={"Authorization": f"Bearer {GITHUB_TOKEN}"},
-        timeout=8,
-    )
+    auth_scheme = "Bearer" if str(GITHUB_TOKEN).startswith("github_pat_") else "token"
+    headers = {
+        "Authorization": f"{auth_scheme} {GITHUB_TOKEN}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+        "User-Agent": "streamlit-app"
+    }
+
+    test = requests.get("https://api.github.com/user", headers=headers, timeout=8)
     st.sidebar.write(f"Token test status: {test.status_code}")
-    if test.status_code != 200:
-        st.sidebar.write(test.json())
-    else:
+
+    if test.status_code == 200:
         j = test.json()
         st.sidebar.success(f"Authenticated as: {j.get('login', 'Unknown')}")
+    else:
+        try:
+            st.sidebar.error(test.json())
+        except Exception:
+            st.sidebar.error(test.text)
 except Exception as e:
     st.sidebar.error(f"Token check failed: {e}")
-
-# --- Try PyGithub connection ---
-GITHUB_REPO = None
-if GITHUB_TOKEN and GITHUB_REPO_NAME and HAS_PYGITHUB:
-    try:
-        gh = Github(GITHUB_TOKEN)
-        user = gh.get_user().login
-        st.sidebar.info(f"PyGithub Authenticated as: {user}")
-
-        GITHUB_REPO = gh.get_repo(GITHUB_REPO_NAME)
-        st.sidebar.success(f"✅ Connected to repo: {GITHUB_REPO_NAME}")
-    except Exception as e:
-        st.sidebar.error(f"⚠️ PyGithub connection failed: {e}")
-else:
-    st.sidebar.warning("⚠️ GitHub token missing or PyGithub not installed")
 
 # -----------------------
 # Telegram Secrets
