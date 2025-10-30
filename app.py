@@ -78,7 +78,7 @@ else:
 
 # GitHub connection indicator
 if GITHUB_TOKEN and GITHUB_REPO:
-    st.sidebar.info("GitHub secrets present")
+    st.sidebar.success("✅ GitHub secrets present")
 else:
     st.sidebar.error("GitHub credentials missing")
 
