@@ -85,6 +85,23 @@ else:
     st.sidebar.error("❌ No GitHub token found")
 
 # -----------------------
+# Sidebar Status
+# -----------------------
+st.sidebar.header("Settings")
+
+# Telegram connection indicator
+if TELEGRAM_TOKEN and CHAT_ID:
+    st.sidebar.success("✅ Telegram configured")
+else:
+    st.sidebar.warning("⚠️ Telegram not set – alerts disabled")
+
+# GitHub connection indicator
+if GITHUB_TOKEN and GITHUB_REPO:
+    st.sidebar.info("GitHub secrets present")
+else:
+    st.sidebar.error("GitHub credentials missing")
+
+# -----------------------
 # Load Excel file from GitHub (REST)
 # -----------------------
 @st.cache_data(ttl=120)
