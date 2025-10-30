@@ -139,7 +139,6 @@ def save_excel_to_github(df, message="Update watchlist"):
 # -----------------------
 
 # Upload file option to override GitHub watchlist
-uploaded_file = st.sidebar.file_uploader("Upload new watchlist (Excel)", type=["xlsx"])
 use_uploaded = False
 
 if uploaded_file is not None:
