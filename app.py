@@ -106,6 +106,19 @@ if not use_uploaded:
     watchlist_df = load_excel_from_github()
     st.sidebar.info("Using GitHub watchlist as default source")
 
+# ---- Create placeholder combined table (empty data for now) ----
+cols = ["Symbol", "CMP", "52W_Low", "52W_High", "EMA200", "RSI14", "Signal"]
+combined_df = pd.DataFrame(columns=cols)
+
+# Fill with symbols from watchlist, rest empty
+combined_df["Symbol"] = watchlist_df["Symbol"].dropna().astype(str)
+combined_df[["CMP", "52W_Low", "52W_High", "EMA200", "RSI14", "Signal"]] = ""
+
+# Display at top (before controls)
+st.subheader("📊 Combined Summary Table")
+st.dataframe(combined_df, use_container_width=True, hide_index=True)
+st.caption("Will auto-update after scanning.")
+
 # -----------------------
 # Telegram Helper
 # -----------------------
@@ -195,19 +208,24 @@ if watchlist_df.empty or "Symbol" not in watchlist_df.columns:
 else:
     symbols = watchlist_df["Symbol"].dropna().astype(str).tolist()
 
-    # Combined table placeholder at top
-    summary_placeholder = st.empty()
-    last_scan_time = st.empty()
-
     st.subheader("⚙️ Controls")
-    run_now = st.button("Run Scan Now", key="run_now")
-    auto = st.checkbox("Enable Auto-scan (local only)", key="auto_chk")
-    interval = st.number_input("Interval (sec)", value=60, step=5, min_value=5, key="interval_input")
+    
+    col1, col2 = st.columns([1, 2])
+    
+    with col1:
+        run_now = st.button("Run Scan Now", key="run_now_btn")
+        auto = st.checkbox("Enable Auto-scan (local only)", key="auto_chk")
+        interval = st.number_input("Interval (sec)", value=60, step=5, min_value=5, key="interval_input")
+    
+    with col2:
+        st.markdown("**Status:**")
+        st.write(f"- GitHub Repo: `{GITHUB_REPO or 'N/A'}`")
+        st.write(f"- Token: {'✅' if GITHUB_TOKEN else '❌'}")
+        try:
+            st.caption(f"yfinance version: {yf.__version__}")
+        except Exception:
+            pass
 
-    st.write("Status:")
-    st.write(f"- GitHub Repo: {GITHUB_REPO or 'N/A'}")
-    st.write(f"- Token: {'✅' if GITHUB_TOKEN else '❌'}")
-    st.caption(f"yfinance version: {yf.__version__}")
 
     # Run scan
     def run_scan():
