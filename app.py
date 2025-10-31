@@ -254,42 +254,70 @@ with col2:
         pass
 
 # -----------------------
-# Run scan
+# Run Scan (with conditional debug output)
 # -----------------------
 def run_scan():
-    if not symbols:
-        st.warning("No symbols to scan.")
-        return
-
     results = []
-    debug_lines = []
+    debug_logs = []
+    errors_found = False
 
-    for s in symbols:
-        debug_lines.append(f"Processing {s} ...")
-        r = analyze(s)
-        if r:
-            results.append(r)
-            debug_lines.append(f"OK {s}: CMP={r['CMP']} EMA200={r['EMA200']} RSI={r['RSI14']}")
-        else:
-            debug_lines.append(f"No result for {s}")
-        # small delay to be polite to Yahoo
-        time.sleep(0.25)
+    for symbol in symbols:
+        try:
+            debug_logs.append(f"Processing {symbol} ...")
+            df = yf.download(symbol, period="1y", interval="1d", progress=False, auto_adjust=True)
 
+            if df is None or df.empty:
+                msg = f"⚠️ No data for {symbol}"
+                debug_logs.append(msg)
+                errors_found = True
+                continue
+
+            df = calc_rsi_ema(df)
+            last = df.iloc[-1]
+
+            cmp_ = float(last["Close"])
+            ema200 = float(last["EMA200"])
+            rsi14 = float(last["RSI14"])
+            high_52w = float(last["52W_High"])
+            low_52w = float(last["52W_Low"])
+
+            if cmp_ > ema200 and rsi14 < 30:
+                signal = "🔼 Oversold + Above EMA200"
+            elif cmp_ < ema200 and rsi14 > 70:
+                signal = "🔻 Overbought + Below EMA200"
+            else:
+                signal = "Neutral"
+
+            results.append({
+                "Symbol": symbol,
+                "CMP": round(cmp_, 2),
+                "52W_Low": round(low_52w, 2),
+                "52W_High": round(high_52w, 2),
+                "EMA200": round(ema200, 2),
+                "RSI14": round(rsi14, 2),
+                "Signal": signal
+            })
+
+            debug_logs.append(f"✅ OK {symbol}: CMP={cmp_} EMA200={ema200} RSI={rsi14}")
+
+        except Exception as e:
+            msg = f"❌ {symbol}: {e}"
+            debug_logs.append(msg)
+            st.error(msg)
+            errors_found = True
+
+    # --- Update UI ---
     if results:
-        df_result = pd.DataFrame(results)
-        # ensure consistent column order
-        cols = ["Symbol", "CMP", "52W_Low", "52W_High", "EMA200", "RSI14", "Signal"]
-        df_result = df_result[cols]
-        summary_placeholder.dataframe(df_result, use_container_width=True, hide_index=True)
+        df = pd.DataFrame(results)
+        summary_placeholder.dataframe(df, use_container_width=True, hide_index=True)
         last_scan_time.caption(f"Last scan: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     else:
         summary_placeholder.warning("No valid data fetched.")
 
-    # show debug in expander
-    if debug_lines:
-        with st.expander("🔍 Debug details (click to expand)"):
-            for l in debug_lines:
-                st.text(l)
+    # --- Debug Section (only if there were errors) ---
+    if errors_found:
+        with st.expander("🪲 Debug details (click to expand)"):
+            st.text("\n".join(debug_logs))
 
 # Run button
 if run_now:
