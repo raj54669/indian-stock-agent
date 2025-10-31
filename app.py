@@ -255,12 +255,12 @@ def analyze(symbol: str):
         if cmp_ is None:
             return None
 
-        if cmp_ > ema200 and rsi14 <= rsi_buy:
-            signal = "🔼 BUY"
-        elif cmp_ < ema200 and rsi14 >= rsi_sell:
-            signal = "🔻 SELL"
-        else:
-            signal = "Neutral"
+        signal = "Neutral"
+        if ema200 is not None and rsi14 is not None:
+            if cmp_ > ema200 and rsi14 < 30:
+                signal = "BUY"
+            elif cmp_ < ema200 and rsi14 > 70:
+                signal = "SELL"
 
         return {
             "Symbol": symbol,
@@ -287,22 +287,14 @@ if watchlist_df.empty or "Symbol" not in watchlist_df.columns:
 else:
     symbols = watchlist_df["Symbol"].dropna().astype(str).tolist()
 
-# --- Controls for EMA/RSI trigger (must be defined before using them) ---
-st.sidebar.subheader("📏 Indicator Settings")
-ema_trigger = st.sidebar.number_input("EMA Period", value=200, step=10, min_value=10)
-rsi_buy = st.sidebar.number_input("RSI Buy Trigger (≤)", value=30, step=1, min_value=5, max_value=95)
-rsi_sell = st.sidebar.number_input("RSI Sell Trigger (≥)", value=70, step=1, min_value=5, max_value=95)
-
-
 # Combined summary placeholder (only one)
 st.subheader("📋 Combined Summary Table")
-ema_col = f"EMA{ema_trigger}"
 initial_df = pd.DataFrame({
     "Symbol": symbols if symbols else [],
     "CMP": ["" for _ in symbols] if symbols else [],
     "52W_Low": ["" for _ in symbols] if symbols else [],
     "52W_High": ["" for _ in symbols] if symbols else [],
-    ema_col: ["" for _ in symbols] if symbols else [],
+    f"EMA{ema_trigger}": ["" for _ in symbols] if symbols else [],
     "RSI14": ["" for _ in symbols] if symbols else [],
     "Signal": ["" for _ in symbols] if symbols else [],
 })
