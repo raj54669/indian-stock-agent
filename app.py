@@ -194,125 +194,74 @@ def send_telegram(message: str):
 # -----------------------
 def calc_rsi_ema(symbol: str, period_days="1y"):
     """
-    Fetch historical data and compute EMA200 + RSI14 safely, even if
-    fewer than 200 rows are available (e.g., 1y NSE tickers).
+    Fetch daily 1-year data for `symbol` and compute:
+      - EMA200
+      - RSI14
+      - 52-week High/Low
+    Returns the last row with these indicators.
     """
     import numpy as np
+
     try:
-        # 1️⃣ Download with fallback
-        df = yf.download(
-            symbol,
-            period=period_days,
-            interval="1d",
-            progress=False,
-            auto_adjust=True,
-            threads=False,
-        )
+        df = yf.download(symbol, period=period_days, interval="1d", progress=False, auto_adjust=True)
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = [c[1] if isinstance(c, tuple) else c for c in df.columns]
 
-        if df is None or df.empty or "Close" not in df.columns:
-            t = yf.Ticker(symbol)
-            df = t.history(period=period_days, interval="1d", auto_adjust=True)
-            if isinstance(df.columns, pd.MultiIndex):
-                df.columns = [c[1] if isinstance(c, tuple) else c for c in df.columns]
-
-        if df is None or df.empty or "Close" not in df.columns:
-            st.error(f"❌ No valid Close data for {symbol}")
+        if df.empty or "Close" not in df.columns:
+            st.error(f"No data for {symbol}")
             return None
 
-        st.write(f"✅ {symbol}: {len(df)} rows, cols={list(df.columns)}")
+        df = df.dropna(subset=["Close"]).copy()
 
-        # 2️⃣ Compute EMA200 and RSI14
-        df = df.copy().dropna(subset=["Close"])
+        # --- EMA200 ---
+        df["EMA200"] = df["Close"].ewm(span=200, adjust=False).mean()
 
-        # Even if <200 rows, still compute EMA
-        df["EMA200"] = df["Close"].ewm(span=min(200, len(df)), adjust=False).mean()
-
+        # --- RSI14 (Wilder's method) ---
         delta = df["Close"].diff()
-        gain = np.where(delta > 0, delta, 0)
-        loss = np.where(delta < 0, -delta, 0)
-        roll_up = pd.Series(gain).rolling(window=14, min_periods=1).mean()
-        roll_down = pd.Series(loss).rolling(window=14, min_periods=1).mean()
-        rs = roll_up / np.where(roll_down == 0, np.nan, roll_down)
+        gain = delta.where(delta > 0, 0.0)
+        loss = -delta.where(delta < 0, 0.0)
+        avg_gain = gain.ewm(alpha=1/14, min_periods=14, adjust=False).mean()
+        avg_loss = loss.ewm(alpha=1/14, min_periods=14, adjust=False).mean()
+        rs = avg_gain / avg_loss.replace(0, np.nan)
         df["RSI14"] = 100 - (100 / (1 + rs))
 
-        # 3️⃣ Drop rows only where both indicators are NaN
-        df = df.dropna(subset=["EMA200", "RSI14"], how="all")
-        if df.empty:
-            st.warning(f"⚠️ Computed EMA/RSI are all NaN for {symbol}")
-            return None
-
-        st.write(f"ℹ️ {symbol} last computed values:")
-        st.write(df.tail(3)[["Close", "EMA200", "RSI14"]])
-
-        return df
-
-    except Exception as e:
-        st.error(f"⚠️ Fetch/Calc error for {symbol}: {e}")
-        import traceback
-        st.error(traceback.format_exc())
-        return None
-
-def analyze(symbol):
-    """
-    Robust analyzer:
-    - Calls calc_rsi_ema(symbol)
-    - Logs helpful debug info (columns, last rows)
-    - Ensures a dict is returned (Signal always present)
-    """
-    import traceback
-
-    try:
-        df = calc_rsi_ema(symbol)
-        if df is None or df.empty:
-            st.warning(f"No valid DataFrame returned from calc_rsi_ema for {symbol}")
-            return None
-
-        # Debug: show last rows and columns (visible in UI)
-        try:
-            st.write(f"DEBUG {symbol} - columns: {list(df.columns)}")
-            st.write(df.tail(3))
-        except Exception as e:
-            st.write(f"(Could not display tail for {symbol}: {e})")
-
-        # Validate required columns
-        if "Close" not in df.columns or "EMA200" not in df.columns or "RSI14" not in df.columns:
-            st.error(f"Missing required columns for {symbol}: {list(df.columns)}")
-            return None
+        # --- 52-week high/low (last 252 trading days) ---
+        df["52W_High"] = df["Close"].rolling(window=252, min_periods=1).max()
+        df["52W_Low"]  = df["Close"].rolling(window=252, min_periods=1).min()
 
         last = df.iloc[-1]
-        close = float(last["Close"])
-        ema200 = float(last["EMA200"])
-        rsi = float(last["RSI14"])
-
-        # Primary goal logic:
-        # BUY when price > EMA200 and RSI < 30
-        # SELL when price < EMA200 and RSI > 70
-        signal = "Neutral"
-        dist_pct = (close - ema200) / ema200 * 100 if ema200 else None
-
-        if close > ema200 and rsi < 30:
-            signal = "BUY"
-        elif close < ema200 and rsi > 70:
-            signal = "SELL"
-        else:
-            signal = "Neutral"
-
-        # Always return a dict (so neutral results still show)
         return {
             "Symbol": symbol,
-            "Close": round(close, 2),
-            "EMA200": round(ema200, 2),
-            "RSI": round(rsi, 2),
-            "Dist%": round(dist_pct, 2) if dist_pct is not None else None,
-            "Signal": signal
+            "CMP": round(last["Close"], 2),
+            "52W_Low": round(last["52W_Low"], 2),
+            "52W_High": round(last["52W_High"], 2),
+            "EMA200": round(last["EMA200"], 2),
+            "RSI14": round(last["RSI14"], 2),
         }
 
     except Exception as e:
-        st.error(f"analyze() error for {symbol}: {e}")
-        st.error(traceback.format_exc())
+        st.error(f"Error in calc_rsi_ema for {symbol}: {e}")
         return None
+
+def analyze(symbol):
+    """Return one-row dict for combined table."""
+    row = calc_rsi_ema(symbol)
+    if not row:
+        return None
+
+    cmp_ = row["CMP"]
+    ema  = row["EMA200"]
+    rsi  = row["RSI14"]
+
+    # --- Signal logic ---
+    signal = "Neutral"
+    if cmp_ > ema and rsi < 30:
+        signal = "BUY"
+    elif cmp_ < ema and rsi > 70:
+        signal = "SELL"
+
+    row["Signal"] = signal
+    return row
 
 # -----------------------
 # Controls
@@ -334,55 +283,45 @@ with col2:
 def run_scan_once():
     if watchlist_df is None or "Symbol" not in watchlist_df.columns:
         st.error("No watchlist available")
-        return
+        return [], []
+
     symbols = watchlist_df["Symbol"].dropna().astype(str).tolist()
     results, alerts = [], []
 
     with st.spinner(f"Scanning {len(symbols)} symbols..."):
         for s in symbols:
-            st.write(f"Processing symbol: {s}")
-            # Inform user that fetching/analysis is starting
-            st.info(f"Fetching and analyzing {s} ...")
-        
-            try:
-                r = analyze(s)
-            except Exception as e:
-                st.error(f"Unexpected error while analyzing {s}: {e}")
-                # show traceback as well
-                import traceback
-                st.error(traceback.format_exc())
-                r = None
-        
-            if r is None:
-                # If analyze returned None, give more context to help debugging
-                st.warning(f"No result returned for {s}. Check the debug output above for details.")
-            else:
+            st.write(f"Processing {s} …")
+            r = analyze(s)
+            if r:
                 results.append(r)
-                # show immediate info
-                st.success(f"{s} → Signal: {r['Signal']} (RSI={r['RSI']}, Close={r['Close']}, EMA200={r['EMA200']})")
                 if r["Signal"] in ("BUY", "SELL"):
-                    alerts.append(f"{r['Symbol']}: {r['Signal']} (RSI={r['RSI']}, Close={r['Close']})")
-        
-            # small delay to avoid hammering remote API (reduces chance of partial/empty responses)
+                    alerts.append(f"{s}: {r['Signal']} (RSI={r['RSI14']}, CMP={r['CMP']}, EMA200={r['EMA200']})")
             time.sleep(0.25)
-          
 
     if results:
         df_result = pd.DataFrame(results)
-        st.success("✅ Scan complete — results displayed below")
         st.dataframe(df_result)
+        st.caption(f"Last scan completed at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     else:
-        st.info("ℹ️ No valid results from scan")
+        st.info("No valid results")
 
     if alerts:
-        st.warning("⚡ Alerts:\n" + "\n".join(alerts))
-        send_telegram("⚠️ Stock Alerts:\n" + "\n".join(alerts))
+        msg = "⚠️ Stock Alerts:\n" + "\n".join(alerts)
+        st.warning(msg)
+        send_telegram(msg)
 
+    return results, alerts
+
+
+# --- Run manually when button clicked ---
 if run_now:
     run_scan_once()
+    
+# --- Auto-refresh loop using streamlit-autorefresh ---
+try:
+    from streamlit_autorefresh import st_autorefresh
+    if auto:
+        st_autorefresh(interval=int(interval) * 1000, key="autorefresh")
+except Exception:
+    st.info("Install streamlit-autorefresh for background scans: pip install streamlit-autorefresh")
 
-if auto:
-    st.warning("Auto-scan started (use cautiously)")
-    while True:
-        run_scan_once()
-        time.sleep(max(5, int(interval)))
