@@ -287,14 +287,22 @@ if watchlist_df.empty or "Symbol" not in watchlist_df.columns:
 else:
     symbols = watchlist_df["Symbol"].dropna().astype(str).tolist()
 
+# --- Controls for EMA/RSI trigger (must be defined before using them) ---
+st.sidebar.subheader("📏 Indicator Settings")
+ema_trigger = st.sidebar.number_input("EMA Period", value=200, step=10, min_value=10)
+rsi_buy = st.sidebar.number_input("RSI Buy Trigger (≤)", value=30, step=1, min_value=5, max_value=95)
+rsi_sell = st.sidebar.number_input("RSI Sell Trigger (≥)", value=70, step=1, min_value=5, max_value=95)
+
+
 # Combined summary placeholder (only one)
 st.subheader("📋 Combined Summary Table")
+ema_col = f"EMA{ema_trigger}"
 initial_df = pd.DataFrame({
     "Symbol": symbols if symbols else [],
     "CMP": ["" for _ in symbols] if symbols else [],
     "52W_Low": ["" for _ in symbols] if symbols else [],
     "52W_High": ["" for _ in symbols] if symbols else [],
-    f"EMA{ema_trigger}": ["" for _ in symbols] if symbols else [],
+    ema_col: ["" for _ in symbols] if symbols else [],
     "RSI14": ["" for _ in symbols] if symbols else [],
     "Signal": ["" for _ in symbols] if symbols else [],
 })
