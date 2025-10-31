@@ -502,24 +502,27 @@ def add_to_alert_history(symbol, signal, cmp_, ema200, rsi14):
     )
 
 # -----------------------
-# 📋 Display History Section
+# 📜 Alert History Section
 # -----------------------
 st.subheader("📜 Alert History")
 
-col_h1, col_h2 = st.columns([5, 1])
-with col_h1:
+# Ensure alert_history is initialized
+if "alert_history" not in st.session_state:
+    st.session_state["alert_history"] = pd.DataFrame(columns=["Date & Time", "Symbol", "Signal", "CMP", "EMA200", "RSI14"])
+
+# Display alert history table
+if not st.session_state["alert_history"].empty:
     st.dataframe(
-        st.session_state.alert_history,
+        st.session_state["alert_history"],
         use_container_width=True,
         hide_index=True
     )
-with col_h2:
     if st.button("🧹 Clear History"):
-        st.session_state.alert_history = pd.DataFrame(
-            columns=["Date & Time (IST)", "Symbol", "Signal", "CMP", "EMA200", "RSI14"]
-        )
+        st.session_state["alert_history"] = pd.DataFrame(columns=["Date & Time", "Symbol", "Signal", "CMP", "EMA200", "RSI14"])
         st.success("✅ Alert history cleared!")
-
+        st.experimental_rerun()
+else:
+    st.info("No alerts triggered yet.")
 
 # -----------------------
 # Buttons and Actions
@@ -534,21 +537,6 @@ if test_telegram:
         st.success("✅ Telegram test alert sent successfully!")
     else:
         st.error("❌ Telegram send failed. Check your token or chat_id.")
-
-# -----------------------
-# Alert History Section
-# -----------------------
-st.subheader("📜 Alert History")
-
-if st.session_state.alert_history:
-    hist_df = pd.DataFrame(st.session_state.alert_history)
-    st.dataframe(hist_df, use_container_width=True, hide_index=True)
-    if st.button("🧹 Clear Alert History"):
-        st.session_state.alert_history = []
-        st.experimental_rerun()
-else:
-    st.info("No alerts triggered yet.")
-
 
 # -----------------------
 # Auto-scan via streamlit-autorefresh
