@@ -321,34 +321,37 @@ def run_scan_once():
 
     return results, alerts
 
-
 # =============================
-# 🧭 User Controls
+# 🧭 Controls (unique widget keys to avoid duplicate IDs)
 # =============================
-
 st.subheader("⚙️ Controls")
-
 col1, col2 = st.columns([1, 2])
+
 with col1:
-    run_now = st.button("Run Scan Now")
-    auto = st.checkbox("Enable Auto-scan (local only)")
-    interval = st.number_input("Interval (sec)", value=60, step=10)
+    # assign explicit keys so Streamlit can re-run safely without duplicate-id errors
+    run_now = st.button("Run Scan Now", key="run_now_btn")
+    auto = st.checkbox("Enable Auto-scan (local only)", key="auto_chk")
+    interval = st.number_input("Interval (sec)", value=60, step=5, min_value=5, key="interval_input")
+
 with col2:
     st.write("Status:")
     st.write(f"- GitHub Repo: {GITHUB_REPO or 'N/A'}")
     st.write(f"- Token: {'✅' if GITHUB_TOKEN else '❌'}")
+    st.caption(f"yfinance version: {yf.__version__}")
 
-# --- Run manually when button clicked ---
+# Remove any old infinite while-loop. Use non-blocking autorefresh instead.
+# Run the scan now if the button was pressed
 if run_now:
     run_scan_once()
 
-# --- Auto-refresh (background scan) ---
+# Auto-refresh (background scans) using streamlit-autorefresh (non-blocking)
 try:
     from streamlit_autorefresh import st_autorefresh
     if auto:
+        # st_autorefresh triggers a rerun every interval*1000 ms.
+        # Use the same interval value provided by the user.
         st_autorefresh(interval=int(interval) * 1000, key="autorefresh")
-        st.info(f"Auto-refresh active — interval {interval}s")
+        # On rerun, the 'if run_now' above is False, so ensure we call the scan on each refresh:
         run_scan_once()
 except Exception:
-    st.info("Install streamlit-autorefresh for background scans: pip install streamlit-autorefresh")
-
+    st.info("Optional: install streamlit-autorefresh for background scans: pip install streamlit-autorefresh")
