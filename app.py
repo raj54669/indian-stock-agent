@@ -136,68 +136,57 @@ def send_telegram(message: str):
 # -----------------------
 # Indicator calc (expects DataFrame)
 # -----------------------
+# -----------------------
+# RSI & EMA Calculation (fixed)
+# -----------------------
 def calc_rsi_ema(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Accepts a DataFrame with a 'Close' column (numeric). Returns df with EMA200, RSI14, 52W_High, 52W_Low.
-    """
     df = df.copy()
-    if "Close" not in df.columns:
-        raise ValueError("DataFrame must contain 'Close' column")
 
-    # ensure numeric close prices
-    close = pd.to_numeric(df["Close"], errors="coerce")
+    # Ensure Close is a Series
+    close = df["Close"]
+    if isinstance(close, pd.DataFrame):
+        close = close.iloc[:, 0]
+    close = close.astype(float)
 
-    # EMA200
-    span_val = 200 if len(close) >= 200 else max(2, len(close))
-    df["EMA200"] = close.ewm(span=span_val, adjust=False).mean()
+    # --- EMA200 ---
+    df["EMA200"] = close.ewm(span=min(200, len(close)), adjust=False).mean()
 
-    # RSI14 calculation
+    # --- RSI14 ---
     delta = close.diff()
     gain = delta.clip(lower=0)
-    loss = (-delta).clip(lower=0)
+    loss = -delta.clip(upper=0)
 
-    avg_gain = gain.ewm(alpha=1/14, adjust=False, min_periods=14).mean()
-    avg_loss = loss.ewm(alpha=1/14, adjust=False, min_periods=14).mean()
+    avg_gain = gain.ewm(alpha=1/14, min_periods=14, adjust=False).mean()
+    avg_loss = loss.ewm(alpha=1/14, min_periods=14, adjust=False).mean()
 
     rs = avg_gain / avg_loss.replace(0, np.nan)
     df["RSI14"] = 100 - (100 / (1 + rs))
 
-    # 52-week high/low
-    df["52W_High"] = close.rolling(window=252, min_periods=1).max()
-    df["52W_Low"] = close.rolling(window=252, min_periods=1).min()
+    # --- 52W High/Low ---
+    df["52W_High"] = close.rolling(252, min_periods=1).max()
+    df["52W_Low"] = close.rolling(252, min_periods=1).min()
 
     return df
 
-
 # -----------------------
-# Analyzer: download & return single-row dict
-# -----------------------
-# -----------------------
-# Analyzer
+# Analyzer (fixed)
 # -----------------------
 def analyze(symbol: str):
     try:
-        # Download 1 year of daily data for each symbol
         df = yf.download(symbol, period="1y", interval="1d", progress=False, auto_adjust=True)
         if df is None or df.empty:
-            raise ValueError(f"No data fetched for {symbol}")
+            raise ValueError(f"No data for {symbol}")
 
-        # Calculate EMA and RSI using the existing helper
         df = calc_rsi_ema(df)
-
-        # Compute 52-week high/low
-        df["52W_High"] = df["Close"].rolling(252, min_periods=1).max()
-        df["52W_Low"] = df["Close"].rolling(252, min_periods=1).min()
-
-        # Get latest row
         last = df.iloc[-1]
+
         cmp_ = float(last["Close"])
         ema200 = float(last["EMA200"])
         rsi14 = float(last["RSI14"])
         high_52w = float(last["52W_High"])
         low_52w = float(last["52W_Low"])
 
-        # Signal logic
+        # Determine signal
         signal = "Neutral"
         if cmp_ > ema200 and rsi14 < 30:
             signal = "🔼 Oversold + Above EMA200"
@@ -217,6 +206,7 @@ def analyze(symbol: str):
     except Exception as e:
         st.error(f"analyze() error for {symbol}: {e}")
         return None
+
 
 
 # -----------------------
