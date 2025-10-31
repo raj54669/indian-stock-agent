@@ -15,6 +15,10 @@ except ImportError:
 
 st.markdown("<style>div.block-container {padding-top: 1rem;}</style>", unsafe_allow_html=True)
 
+# Initialize session state for alert history
+if "alert_history" not in st.session_state:
+    st.session_state.alert_history = []
+
 # -----------------------
 # Streamlit Config
 # -----------------------
@@ -236,11 +240,11 @@ def calc_rsi_ema(df: pd.DataFrame) -> Optional[pd.DataFrame]:
 
 def analyze(symbol: str):
     """
-    Download data and return a single-row dict with indicators.
-    Returns None on failure (caller should log/display debug).
+    Download data and return a single-row dict with indicators and signal.
+    Includes BUY/SELL/Watch conditions based on CMP vs EMA200 ±2% and RSI ranges.
     """
     try:
-        # fetch 2 years to stabilize EMA200
+        # Fetch 2 years of data for stable EMA200
         df = yf.download(symbol, period="2y", interval="1d", progress=False, auto_adjust=True)
         if df is None or df.empty:
             return None
@@ -251,35 +255,67 @@ def analyze(symbol: str):
 
         last = df_ind.iloc[-1]
 
-        # safe extraction (guard against NaN)
+        # Extract numeric values safely
         cmp_ = float(last["Close"]) if not pd.isna(last["Close"]) else None
         ema200 = float(last["EMA200"]) if "EMA200" in last.index and not pd.isna(last["EMA200"]) else None
         rsi14 = float(last["RSI14"]) if "RSI14" in last.index and not pd.isna(last["RSI14"]) else None
         low52 = float(last["52W_Low"]) if "52W_Low" in last.index and not pd.isna(last["52W_Low"]) else None
         high52 = float(last["52W_High"]) if "52W_High" in last.index and not pd.isna(last["52W_High"]) else None
 
-        if cmp_ is None:
+        if cmp_ is None or ema200 is None or rsi14 is None:
             return None
 
+        # -------------------------------
+        # 🔔 Signal Conditions
+        # -------------------------------
         signal = "Neutral"
-        if ema200 is not None and rsi14 is not None:
-            if cmp_ > ema200 and rsi14 < 30:
-                signal = "BUY"
-            elif cmp_ < ema200 and rsi14 > 70:
-                signal = "SELL"
+        alert_condition = ""
 
+        # 1️⃣ WATCH: EMA200 within ±2% of CMP & RSI between 30–40
+        if (cmp_ * 0.98 <= ema200 <= cmp_ * 1.02) and (30 <= rsi14 <= 40):
+            signal = "🟡 ⚠️ Watch"
+            alert_condition = "EMA200 within ±2% of CMP & RSI between 30–40"
+
+        # 2️⃣ BUY: RSI < 30
+        elif rsi14 < 30:
+            signal = "🟢 🔼 BUY"
+            alert_condition = "RSI < 30 (Oversold)"
+
+        # 3️⃣ SELL: RSI > 70
+        elif rsi14 > 70:
+            signal = "🔴 🔽 SELL"
+            alert_condition = "RSI > 70 (Overbought)"
+
+        # -------------------------------
+        # ✅ Telegram Message Format
+        # -------------------------------
+        telegram_msg = (
+            f"⚡ Alert: {symbol}\n"
+            f"CMP = {cmp_:.2f}\n"
+            f"EMA200 = {ema200:.2f}\n"
+            f"RSI14 = {rsi14:.2f}\n"
+            f"Condition: {alert_condition if alert_condition else 'No active signal'}"
+        )
+
+        # -------------------------------
+        # Return structured result
+        # -------------------------------
         return {
             "Symbol": symbol,
             "CMP": round(cmp_, 2),
             "52W_Low": round(low52, 2) if low52 is not None else None,
             "52W_High": round(high52, 2) if high52 is not None else None,
-            "EMA200": round(ema200, 2) if ema200 is not None else None,
-            "RSI14": round(rsi14, 2) if rsi14 is not None else None,
-            "Signal": signal
+            "EMA200": round(ema200, 2),
+            "RSI14": round(rsi14, 2),
+            "Signal": signal,
+            "AlertCondition": alert_condition,
+            "TelegramMessage": telegram_msg
         }
 
-    except Exception:
+    except Exception as e:
+        st.error(f"{symbol}: {e}")
         return None
+
 
 
 # -----------------------
@@ -373,22 +409,41 @@ def run_scan():
             high_52w = float(last["52W_High"])
             low_52w = float(last["52W_Low"])
 
-            # --- Determine signal and log alerts ---
-            if cmp_ > ema200 and rsi14 < 30:
-                signal = "🔼 Oversold + Above EMA200"
-                st.session_state["alert_history"].append(
-                    f"BUY ALERT: {symbol} | CMP={cmp_} | EMA200={ema200} | RSI={rsi14}"
-                )
-                send_telegram(f"📈 BUY Triggered for {symbol}\nCMP={cmp_}\nEMA200={ema200}\nRSI={rsi14}")
-            elif cmp_ < ema200 and rsi14 > 70:
-                signal = "🔻 Overbought + Below EMA200"
-                st.session_state["alert_history"].append(
-                    f"SELL ALERT: {symbol} | CMP={cmp_} | EMA200={ema200} | RSI={rsi14}"
-                )
-                send_telegram(f"📉 SELL Triggered for {symbol}\nCMP={cmp_}\nEMA200={ema200}\nRSI={rsi14}")
-            else:
-                signal = "Neutral"
+            # --- Determine signal ---
+            signal = "Neutral"
+            condition_desc = None
 
+            # 1️⃣ BUY: RSI < 30 and CMP > EMA200
+            if cmp_ > ema200 and rsi14 < 30:
+                signal = "🟢 BUY"
+                condition_desc = "RSI < 30 and CMP above EMA200"
+
+            # 2️⃣ SELL: RSI > 70 and CMP < EMA200
+            elif cmp_ < ema200 and rsi14 > 70:
+                signal = "🔴 SELL"
+                condition_desc = "RSI > 70 and CMP below EMA200"
+
+            # 3️⃣ WATCH: EMA200 within ±2% of CMP and RSI between 30–40
+            elif abs(cmp_ - ema200) / cmp_ <= 0.02 and 30 <= rsi14 <= 40:
+                signal = "🟡 WATCH"
+                condition_desc = "EMA200 within ±2% of CMP & RSI between 30–40"
+
+            # --- Record and send alerts for triggered signals ---
+            if signal in ("🟢 BUY", "🔴 SELL", "🟡 WATCH"):
+                add_to_alert_history(symbol, signal, cmp_, ema200, rsi14)
+
+                # Format Telegram alert message
+                emoji = "⚡" if "WATCH" in signal else ("📈" if "BUY" in signal else "📉")
+                alert_msg = (
+                    f"{emoji} *Alert:* {symbol}\n"
+                    f"CMP = {cmp_:.2f}\n"
+                    f"EMA200 = {ema200:.2f}\n"
+                    f"RSI14 = {rsi14:.2f}\n"
+                    f"Condition: {condition_desc}"
+                )
+                send_telegram(alert_msg)
+
+            # Append to results
             results.append({
                 "Symbol": symbol,
                 "CMP": round(cmp_, 2),
@@ -411,11 +466,59 @@ def run_scan():
     if results:
         df = pd.DataFrame(results)
         summary_placeholder.dataframe(df, use_container_width=True, hide_index=True)
-        from datetime import timezone, timedelta 
-        ist = timezone(timedelta(hours=5, minutes=30)) 
+        from datetime import timezone, timedelta
+        ist = timezone(timedelta(hours=5, minutes=30))
         last_scan_time.caption(f"Last scan: {datetime.now(ist).strftime('%Y-%m-%d %H:%M:%S %Z')}")
     else:
         summary_placeholder.warning("No valid data fetched.")
+
+# -----------------------
+# 🔔 Alert History Table
+# -----------------------
+
+from datetime import timezone, timedelta
+IST = timezone(timedelta(hours=5, minutes=30))
+
+# Initialize session state
+if "alert_history" not in st.session_state:
+    st.session_state.alert_history = pd.DataFrame(
+        columns=["Date & Time (IST)", "Symbol", "Signal", "CMP", "EMA200", "RSI14"]
+    )
+
+# Function to append alerts
+def add_to_alert_history(symbol, signal, cmp_, ema200, rsi14):
+    ts = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
+    new_row = pd.DataFrame([{
+        "Date & Time (IST)": ts,
+        "Symbol": symbol,
+        "Signal": signal,
+        "CMP": round(cmp_, 2),
+        "EMA200": round(ema200, 2),
+        "RSI14": round(rsi14, 2)
+    }])
+    st.session_state.alert_history = pd.concat(
+        [st.session_state.alert_history, new_row],
+        ignore_index=True
+    )
+
+# -----------------------
+# 📋 Display History Section
+# -----------------------
+st.subheader("📜 Alert History")
+
+col_h1, col_h2 = st.columns([5, 1])
+with col_h1:
+    st.dataframe(
+        st.session_state.alert_history,
+        use_container_width=True,
+        hide_index=True
+    )
+with col_h2:
+    if st.button("🧹 Clear History"):
+        st.session_state.alert_history = pd.DataFrame(
+            columns=["Date & Time (IST)", "Symbol", "Signal", "CMP", "EMA200", "RSI14"]
+        )
+        st.success("✅ Alert history cleared!")
 
 
 # -----------------------
@@ -435,12 +538,17 @@ if test_telegram:
 # -----------------------
 # Alert History Section
 # -----------------------
-with st.expander("📜 View Alert History"):
-    if st.session_state["alert_history"]:
-        for msg in reversed(st.session_state["alert_history"][-20:]):  # last 20 alerts
-            st.write(msg)
-    else:
-        st.info("No alerts triggered yet.")
+st.subheader("📜 Alert History")
+
+if st.session_state.alert_history:
+    hist_df = pd.DataFrame(st.session_state.alert_history)
+    st.dataframe(hist_df, use_container_width=True, hide_index=True)
+    if st.button("🧹 Clear Alert History"):
+        st.session_state.alert_history = []
+        st.experimental_rerun()
+else:
+    st.info("No alerts triggered yet.")
+
 
 # -----------------------
 # Auto-scan via streamlit-autorefresh
