@@ -151,7 +151,7 @@ def calc_indicators(df: pd.DataFrame) -> Optional[pd.DataFrame]:
 
         df = df.copy()
         df.index = pd.to_datetime(df.index)
-        df["Close"] = pd.to_numeric(df["Close"], errors="coerce")
+        df["Close"] = pd.to_numeric(df["Close"], errors="coerce").fillna(method="ffill").fillna(method="bfill")
         df = df.dropna(subset=["Close"])
         if df.empty:
             return None
@@ -314,28 +314,28 @@ def run_scan_once():
 
 
 # -----------------------
-# Run / Auto-refresh wiring
+# Run / Auto-refresh logic (NO duplicate debug)
 # -----------------------
-# Only run when user clicks Run Scan Now (or auto)
-if run_now:
-    results, debug_lines, alerts = run_scan_once()
+
+def render_debug(debug_lines):
+    """Show debug section once"""
     if debug_lines:
         with st.expander("🔍 Debug details (click to expand)"):
-            for l in debug_lines:
-                st.write(l)
+            for line in debug_lines:
+                st.write(line)
 
-# Optional auto refresh
+# --- Manual Run ---
+if run_now:
+    results, debug_lines, alerts = run_scan_once()
+    render_debug(debug_lines)
+
+# --- Auto-refresh (if enabled) ---
 try:
     from streamlit_autorefresh import st_autorefresh
     if auto:
-        # trigger rerun periodically and call run_scan() again
         st_autorefresh(interval=int(interval) * 1000, key="autorefresh")
         st.info(f"🔁 Auto-scan active — every {interval} seconds")
         results, debug_lines, alerts = run_scan_once()
-        if debug_lines:
-            with st.expander("🔍 Debug details (click to expand)"):
-                for l in debug_lines:
-                    st.write(l)
+        render_debug(debug_lines)
 except Exception:
-    # package optional — ignore if not installed
     pass
