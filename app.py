@@ -13,6 +13,8 @@ try:
 except ImportError:
     st_autorefresh = None
 
+st.markdown("<style>div.block-container {padding-top: 1rem;}</style>", unsafe_allow_html=True)
+
 # -----------------------
 # Streamlit Config
 # -----------------------
@@ -306,19 +308,24 @@ summary_placeholder = st.empty()
 summary_placeholder.dataframe(initial_df, use_container_width=True, hide_index=True)
 last_scan_time = st.caption("Will auto-update after scanning.")
 
+# -----------------------
 # Controls
+# -----------------------
 st.subheader("⚙️ Controls")
+
 col1, col2 = st.columns([1, 2])
 
 with col1:
     run_now = st.button("Run Scan Now", key="run_now_btn")
+
+    interval = st.number_input("Interval (sec)", value=60, step=5, min_value=5, key="interval_input")
+
     auto_col1, auto_col2 = st.columns([1, 3])
     with auto_col1:
         auto = st.checkbox("Enable Auto-scan", key="auto_chk")
     with auto_col2:
         if auto:
             st.caption(f"🔁 Auto-scan active — every {interval} seconds")
-    interval = st.number_input("Interval (sec)", value=60, step=5, min_value=5, key="interval_input")
 
 with col2:
     st.markdown("**Status:**")
