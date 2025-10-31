@@ -82,7 +82,6 @@ if GITHUB_TOKEN and GITHUB_REPO:
 else:
     st.sidebar.error("GitHub credentials missing")
 
-st.sidebar.caption(f"yfinance version: {yf.__version__}")
 
 # -----------------------
 # Load Excel file from GitHub (REST)
