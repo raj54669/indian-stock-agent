@@ -255,12 +255,12 @@ def analyze(symbol: str):
         if cmp_ is None:
             return None
 
-        signal = "Neutral"
-        if ema200 is not None and rsi14 is not None:
-            if cmp_ > ema200 and rsi14 < 30:
-                signal = "BUY"
-            elif cmp_ < ema200 and rsi14 > 70:
-                signal = "SELL"
+        if cmp_ > ema200 and rsi14 <= rsi_buy:
+            signal = "🔼 BUY"
+        elif cmp_ < ema200 and rsi14 >= rsi_sell:
+            signal = "🔻 SELL"
+        else:
+            signal = "Neutral"
 
         return {
             "Symbol": symbol,
