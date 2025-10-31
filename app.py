@@ -264,35 +264,64 @@ def calc_rsi_ema(symbol: str, period_days="1y"):
         return None
 
 def analyze(symbol):
-    df = calc_rsi_ema(symbol)
-    if df is None or df.empty:
+    """
+    Robust analyzer:
+    - Calls calc_rsi_ema(symbol)
+    - Logs helpful debug info (columns, last rows)
+    - Ensures a dict is returned (Signal always present)
+    """
+    import traceback
+
+    try:
+        df = calc_rsi_ema(symbol)
+        if df is None or df.empty:
+            st.warning(f"No valid DataFrame returned from calc_rsi_ema for {symbol}")
+            return None
+
+        # Debug: show last rows and columns (visible in UI)
+        try:
+            st.write(f"DEBUG {symbol} - columns: {list(df.columns)}")
+            st.write(df.tail(3))
+        except Exception as e:
+            st.write(f"(Could not display tail for {symbol}: {e})")
+
+        # Validate required columns
+        if "Close" not in df.columns or "EMA200" not in df.columns or "RSI14" not in df.columns:
+            st.error(f"Missing required columns for {symbol}: {list(df.columns)}")
+            return None
+
+        last = df.iloc[-1]
+        close = float(last["Close"])
+        ema200 = float(last["EMA200"])
+        rsi = float(last["RSI14"])
+
+        # Primary goal logic:
+        # BUY when price > EMA200 and RSI < 30
+        # SELL when price < EMA200 and RSI > 70
+        signal = "Neutral"
+        dist_pct = (close - ema200) / ema200 * 100 if ema200 else None
+
+        if close > ema200 and rsi < 30:
+            signal = "BUY"
+        elif close < ema200 and rsi > 70:
+            signal = "SELL"
+        else:
+            signal = "Neutral"
+
+        # Always return a dict (so neutral results still show)
+        return {
+            "Symbol": symbol,
+            "Close": round(close, 2),
+            "EMA200": round(ema200, 2),
+            "RSI": round(rsi, 2),
+            "Dist%": round(dist_pct, 2) if dist_pct is not None else None,
+            "Signal": signal
+        }
+
+    except Exception as e:
+        st.error(f"analyze() error for {symbol}: {e}")
+        st.error(traceback.format_exc())
         return None
-
-    last = df.iloc[-1]
-    close = float(last["Close"])
-    ema200 = float(last["EMA200"])
-    rsi = float(last["RSI14"])
-
-    signal = "Neutral"
-    # Primary goal logic:
-    # BUY when price > EMA200 and RSI < 30
-    # SELL when price < EMA200 and RSI > 70
-    dist_pct = (close - ema200) / ema200 * 100 if ema200 else None
-    if close > ema200 and rsi < 30:
-        signal = "BUY"
-    elif close < ema200 and rsi > 70:
-        signal = "SELL"
-
-
-    return {
-        "Symbol": symbol,
-        "Close": round(close, 2),
-        "EMA200": round(ema200, 2),
-        "RSI": round(rsi, 2),
-        "Dist%": round(dist_pct, 2) if dist_pct is not None else None,
-        "Signal": signal
-    }
-
 
 # -----------------------
 # Controls
@@ -320,19 +349,32 @@ def run_scan_once():
 
     with st.spinner(f"Scanning {len(symbols)} symbols..."):
         for s in symbols:
-            # Diagnostic: print symbol being processed
             st.write(f"Processing symbol: {s}")
+            # Inform user that fetching/analysis is starting
+            st.info(f"Fetching and analyzing {s} ...")
+        
             try:
                 r = analyze(s)
             except Exception as e:
-                st.error(f"Error analyzing {s}: {e}")
+                st.error(f"Unexpected error while analyzing {s}: {e}")
+                # show traceback as well
+                import traceback
+                st.error(traceback.format_exc())
                 r = None
-            if r:
+        
+            if r is None:
+                # If analyze returned None, give more context to help debugging
+                st.warning(f"No result returned for {s}. Check the debug output above for details.")
+            else:
                 results.append(r)
+                # show immediate info
+                st.success(f"{s} → Signal: {r['Signal']} (RSI={r['RSI']}, Close={r['Close']}, EMA200={r['EMA200']})")
                 if r["Signal"] in ("BUY", "SELL"):
                     alerts.append(f"{r['Symbol']}: {r['Signal']} (RSI={r['RSI']}, Close={r['Close']})")
-            else:
-                st.warning(f"No result returned for {s}")            
+        
+            # small delay to avoid hammering remote API (reduces chance of partial/empty responses)
+            time.sleep(0.25)
+          
 
     if results:
         df_result = pd.DataFrame(results)
