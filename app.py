@@ -277,10 +277,12 @@ with col2:
     st.write(f"- GitHub Repo: {GITHUB_REPO or 'N/A'}")
     st.write(f"- Token: {'✅' if GITHUB_TOKEN else '❌'}")
 
-# -----------------------
-# Main Scan Logic
-# -----------------------
+# =============================
+# 🧠 Stock Scanning & Analysis
+# =============================
+
 def run_scan_once():
+    """Fetch & analyze all stocks; display combined table."""
     if watchlist_df is None or "Symbol" not in watchlist_df.columns:
         st.error("No watchlist available")
         return [], []
@@ -295,15 +297,22 @@ def run_scan_once():
             if r:
                 results.append(r)
                 if r["Signal"] in ("BUY", "SELL"):
-                    alerts.append(f"{s}: {r['Signal']} (RSI={r['RSI14']}, CMP={r['CMP']}, EMA200={r['EMA200']})")
+                    alerts.append(
+                        f"{s}: {r['Signal']} "
+                        f"(CMP={r['CMP']}, EMA200={r['EMA200']}, RSI={r['RSI14']})"
+                    )
             time.sleep(0.25)
 
     if results:
         df_result = pd.DataFrame(results)
-        st.dataframe(df_result)
+        st.success("✅ Scan complete — latest results:")
+        st.dataframe(
+            df_result[["Symbol", "CMP", "52W_Low", "52W_High", "EMA200", "RSI14", "Signal"]],
+            use_container_width=True
+        )
         st.caption(f"Last scan completed at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     else:
-        st.info("No valid results")
+        st.info("ℹ️ No valid results from scan")
 
     if alerts:
         msg = "⚠️ Stock Alerts:\n" + "\n".join(alerts)
@@ -313,15 +322,33 @@ def run_scan_once():
     return results, alerts
 
 
+# =============================
+# 🧭 User Controls
+# =============================
+
+st.subheader("⚙️ Controls")
+
+col1, col2 = st.columns([1, 2])
+with col1:
+    run_now = st.button("Run Scan Now")
+    auto = st.checkbox("Enable Auto-scan (local only)")
+    interval = st.number_input("Interval (sec)", value=60, step=10)
+with col2:
+    st.write("Status:")
+    st.write(f"- GitHub Repo: {GITHUB_REPO or 'N/A'}")
+    st.write(f"- Token: {'✅' if GITHUB_TOKEN else '❌'}")
+
 # --- Run manually when button clicked ---
 if run_now:
     run_scan_once()
-    
-# --- Auto-refresh loop using streamlit-autorefresh ---
+
+# --- Auto-refresh (background scan) ---
 try:
     from streamlit_autorefresh import st_autorefresh
     if auto:
         st_autorefresh(interval=int(interval) * 1000, key="autorefresh")
+        st.info(f"Auto-refresh active — interval {interval}s")
+        run_scan_once()
 except Exception:
     st.info("Install streamlit-autorefresh for background scans: pip install streamlit-autorefresh")
 
