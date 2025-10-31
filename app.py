@@ -263,19 +263,6 @@ def analyze(symbol):
     row["Signal"] = signal
     return row
 
-# -----------------------
-# Controls
-# -----------------------
-st.subheader("⚙️ Controls")
-col1, col2 = st.columns([1, 2])
-with col1:
-    run_now = st.button("Run Scan Now")
-    auto = st.checkbox("Enable Auto-scan (local only)")
-    interval = st.number_input("Interval (sec)", value=60, step=10)
-with col2:
-    st.write("Status:")
-    st.write(f"- GitHub Repo: {GITHUB_REPO or 'N/A'}")
-    st.write(f"- Token: {'✅' if GITHUB_TOKEN else '❌'}")
 
 # =============================
 # 🧠 Stock Scanning & Analysis
