@@ -323,18 +323,25 @@ with col1:
     auto_col1, auto_col2 = st.columns([1, 3])
     with auto_col1:
         auto = st.checkbox("Enable Auto-scan", key="auto_chk")
-    with auto_col2:
-        if auto:
-            st.caption(f"🔁 Auto-scan active — every {interval} seconds")
 
 with col2:
     st.markdown("**Status:**")
     st.write(f"- GitHub Repo: `{GITHUB_REPO or 'N/A'}`")
     st.write(f"- Token: {'✅' if GITHUB_TOKEN else '❌'}")
-    try:
-        st.caption(f"yfinance version: {yf.__version__}")
-    except Exception:
-        pass
+    if auto:
+        st.write(f"🔁 Auto-scan active — every {interval} seconds")
+
+# Move yfinance version info into sidebar
+try:
+    st.sidebar.caption(f"📦 yfinance version: {yf.__version__}")
+except Exception:
+    pass
+
+# -----------------------
+# Maintain Alert History
+# -----------------------
+if "alert_history" not in st.session_state:
+    st.session_state["alert_history"] = []
 
 # -----------------------
 # Run Scan (with conditional debug output)
@@ -364,10 +371,19 @@ def run_scan():
             high_52w = float(last["52W_High"])
             low_52w = float(last["52W_Low"])
 
+            # --- Determine signal and log alerts ---
             if cmp_ > ema200 and rsi14 < 30:
                 signal = "🔼 Oversold + Above EMA200"
+                st.session_state["alert_history"].append(
+                    f"BUY ALERT: {symbol} | CMP={cmp_} | EMA200={ema200} | RSI={rsi14}"
+                )
+                send_telegram(f"📈 BUY Triggered for {symbol}\nCMP={cmp_}\nEMA200={ema200}\nRSI={rsi14}")
             elif cmp_ < ema200 and rsi14 > 70:
                 signal = "🔻 Overbought + Below EMA200"
+                st.session_state["alert_history"].append(
+                    f"SELL ALERT: {symbol} | CMP={cmp_} | EMA200={ema200} | RSI={rsi14}"
+                )
+                send_telegram(f"📉 SELL Triggered for {symbol}\nCMP={cmp_}\nEMA200={ema200}\nRSI={rsi14}")
             else:
                 signal = "Neutral"
 
@@ -400,7 +416,9 @@ def run_scan():
         summary_placeholder.warning("No valid data fetched.")
 
 
-# Run button
+# -----------------------
+# Buttons and Actions
+# -----------------------
 if run_now:
     run_scan()
 
@@ -411,6 +429,16 @@ if test_telegram:
         st.success("✅ Telegram test alert sent successfully!")
     else:
         st.error("❌ Telegram send failed. Check your token or chat_id.")
+
+# -----------------------
+# Alert History Section
+# -----------------------
+with st.expander("📜 View Alert History"):
+    if st.session_state["alert_history"]:
+        for msg in reversed(st.session_state["alert_history"][-20:]):  # last 20 alerts
+            st.write(msg)
+    else:
+        st.info("No alerts triggered yet.")
 
 # -----------------------
 # Auto-scan via streamlit-autorefresh
