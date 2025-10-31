@@ -1,5 +1,4 @@
-# app.py — Indian Stock Agent (Final working base)
-
+# app.py — Indian Stock Agent (ready-to-paste)
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -14,7 +13,7 @@ from typing import Optional
 st.set_page_config(page_title="📈 Indian Stock Agent – EMA + RSI Alert Bot", layout="wide")
 
 # -----------------------
-# Unified Secrets Loader
+# Secrets helpers
 # -----------------------
 def get_secret(key: str, default=None):
     try:
@@ -40,7 +39,7 @@ TELEGRAM_TOKEN = get_secret_section("TELEGRAM_TOKEN", section="telegram")
 CHAT_ID = get_secret_section("CHAT_ID", section="telegram")
 
 # -----------------------
-# GitHub REST Connection
+# GitHub headers
 # -----------------------
 def github_raw_headers():
     auth_scheme = "Bearer" if str(GITHUB_TOKEN).startswith("github_pat_") else "token"
@@ -50,10 +49,12 @@ def github_raw_headers():
         "User-Agent": "streamlit-indian-stock-agent"
     }
 
+# -----------------------
+# Load Excel from GitHub
+# -----------------------
 @st.cache_data(ttl=120)
 def load_excel_from_github():
     if not (GITHUB_TOKEN and GITHUB_REPO):
-        st.error("Missing GitHub credentials")
         return pd.DataFrame()
     try:
         owner, repo = GITHUB_REPO.split("/", 1)
@@ -63,112 +64,141 @@ def load_excel_from_github():
             df = pd.read_excel(io.BytesIO(r.content))
             return df
         else:
-            st.error(f"GitHub fetch failed: {r.status_code}")
+            st.error(f"GitHub fetch failed: {r.status_code} - {r.text}")
+            return pd.DataFrame()
     except Exception as e:
         st.error(f"Error loading from GitHub: {e}")
-    return pd.DataFrame()
+        return pd.DataFrame()
 
 # -----------------------
-# Sidebar
+# Sidebar: upload + status
 # -----------------------
 st.sidebar.header("📂 Watchlist Management")
 uploaded_file = st.sidebar.file_uploader("Upload new watchlist (Excel)", type=["xlsx"])
-
 st.sidebar.header("Settings")
 
 if TELEGRAM_TOKEN and CHAT_ID:
     st.sidebar.success("✅ Telegram configured")
 else:
-    st.sidebar.warning("⚠️ Telegram not configured")
+    st.sidebar.info("Telegram not configured — alerts disabled")
 
 if GITHUB_TOKEN and GITHUB_REPO:
     st.sidebar.success("✅ GitHub secrets present")
 else:
-    st.sidebar.error("❌ GitHub credentials missing")
+    st.sidebar.warning("GitHub credentials missing (set GITHUB_TOKEN and GITHUB_REPO)")
 
 # -----------------------
-# Load Watchlist
+# Load watchlist (uploaded override or GitHub)
 # -----------------------
 use_uploaded = False
+watchlist_df = pd.DataFrame()
 if uploaded_file is not None:
     try:
-        df = pd.read_excel(uploaded_file)
-        if "Symbol" not in df.columns:
-            st.sidebar.error("Uploaded file must have 'Symbol' column")
+        df_up = pd.read_excel(uploaded_file)
+        if "Symbol" not in df_up.columns:
+            st.sidebar.error("Uploaded file must contain a 'Symbol' column.")
         else:
-            watchlist_df = df
+            watchlist_df = df_up
             use_uploaded = True
-            st.sidebar.success(f"✅ Using uploaded watchlist ({len(df)} symbols)")
+            st.sidebar.success(f"✅ Using uploaded watchlist ({len(watchlist_df)} symbols)")
     except Exception as e:
-        st.sidebar.error(f"Error reading upload: {e}")
+        st.sidebar.error(f"Error reading uploaded file: {e}")
 
 if not use_uploaded:
     watchlist_df = load_excel_from_github()
     st.sidebar.info("Using GitHub watchlist as default source")
 
+# sanitize watchlist: ensure Symbol column exists
+if not watchlist_df.empty:
+    if "Symbol" in watchlist_df.columns:
+        watchlist_df["Symbol"] = watchlist_df["Symbol"].astype(str).str.strip()
+        watchlist_df = watchlist_df[watchlist_df["Symbol"] != ""]
+    else:
+        watchlist_df = pd.DataFrame()
 
 # -----------------------
-# Telegram Helper
+# Telegram helper
 # -----------------------
-def send_telegram(msg):
+def send_telegram(message: str):
     if not TELEGRAM_TOKEN or not CHAT_ID:
-        return
+        return False
     try:
-        requests.post(
+        r = requests.post(
             f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-            data={"chat_id": CHAT_ID, "text": msg},
+            data={"chat_id": CHAT_ID, "text": message},
             timeout=10
         )
+        return r.status_code == 200
     except Exception as e:
-        st.warning(f"Telegram error: {e}")
+        st.warning(f"Telegram send error: {e}")
+        return False
 
 # -----------------------
-# RSI & EMA
+# Indicator calc (expects DataFrame)
 # -----------------------
-def calc_rsi_ema(df):
+def calc_rsi_ema(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Accepts a DataFrame with a 'Close' column (numeric). Returns df with EMA200, RSI14, 52W_High, 52W_Low.
+    """
     df = df.copy()
-    df["EMA200"] = df["Close"].ewm(span=200, adjust=False).mean()
+    # ensure Close exists
+    if "Close" not in df.columns:
+        raise ValueError("DataFrame must contain 'Close' column")
 
-    delta = df["Close"].diff()
-    gain = np.where(delta > 0, delta, 0)
-    loss = np.where(delta < 0, -delta, 0)
-    roll_up = pd.Series(gain.flatten()).rolling(window=14).mean()
-    roll_down = pd.Series(loss.flatten()).rolling(window=14).mean()
-    rs = roll_up / roll_down
+    # convert to float series
+    close = pd.to_numeric(df["Close"], errors="coerce")
+    df["Close"] = close
+
+    # EMA200
+    span_val = 200 if len(close) >= 200 else max(2, len(close))
+    df["EMA200"] = close.ewm(span=span_val, adjust=False).mean()
+
+    # RSI14 using Wilder's smoothing
+    delta = close.diff()
+    gain = delta.clip(lower=0)
+    loss = (-delta).clip(lower=0)
+
+    avg_gain = gain.ewm(alpha=1/14, adjust=False, min_periods=14).mean()
+    avg_loss = loss.ewm(alpha=1/14, adjust=False, min_periods=14).mean()
+
+    rs = avg_gain / avg_loss.replace(0, np.nan)
     df["RSI14"] = 100.0 - (100.0 / (1.0 + rs))
+
+    # 52-week high/low (approx 252 trading days)
+    df["52W_High"] = close.rolling(window=252, min_periods=1).max()
+    df["52W_Low"] = close.rolling(window=252, min_periods=1).min()
+
     return df
 
 # -----------------------
-# Analyzer (replace existing analyze() function)
+# Analyzer: download & return single-row dict
 # -----------------------
 def analyze(symbol: str, period="1y"):
     """
-    Fetch data for `symbol`, compute indicators using calc_rsi_ema(df),
-    and return a single-row dict that matches the combined table columns,
-    or None if data is not available.
+    Download OHLC data for the symbol, compute indicators, and return a dict with required fields.
+    Returns None if any problem occurs or no data.
     """
     try:
-        # fetch raw OHLC daily data
-        df = yf.download(symbol, period=period, interval="1d", progress=False, auto_adjust=True)
-        if df is None or df.empty:
+        raw = yf.download(symbol, period=period, interval="1d", progress=False, auto_adjust=True)
+        if raw is None or raw.empty:
             return None
 
-        # compute indicators (calc_rsi_ema expects a DataFrame)
-        df = calc_rsi_ema(df)
+        df = calc_rsi_ema(raw)
 
-        # ensure we have enough rows
         if df is None or df.empty:
             return None
 
         last = df.iloc[-1]
 
-        # safe extraction with fallbacks
-        cmp_ = float(last["Close"]) if "Close" in last.index and not pd.isna(last["Close"]) else None
-        ema200 = float(last["EMA200"]) if "EMA200" in last.index and not pd.isna(last["EMA200"]) else None
-        rsi14 = float(last["RSI14"]) if "RSI14" in last.index and not pd.isna(last["RSI14"]) else None
+        # safe extraction
+        def safe_get(x, name):
+            return float(x[name]) if (name in x.index and not pd.isna(x[name])) else None
 
-        # 52-week high / low (last value from rolling columns or recompute)
-        # prefer computed columns if present, otherwise compute from Close
+        cmp_ = safe_get(last, "Close")
+        ema200 = safe_get(last, "EMA200")
+        rsi14 = safe_get(last, "RSI14")
+
+        # 52W values: prefer columns if present
         if "52W_High" in df.columns and not pd.isna(df["52W_High"].iloc[-1]):
             high52 = float(df["52W_High"].iloc[-1])
             low52 = float(df["52W_Low"].iloc[-1])
@@ -180,9 +210,9 @@ def analyze(symbol: str, period="1y"):
         # signal logic
         signal = "Neutral"
         if ema200 is not None and rsi14 is not None and cmp_ is not None:
-            if cmp_ > ema200 and rsi14 < 30:
+            if (cmp_ > ema200) and (rsi14 < 30):
                 signal = "BUY"
-            elif cmp_ < ema200 and rsi14 > 70:
+            elif (cmp_ < ema200) and (rsi14 > 70):
                 signal = "SELL"
 
         return {
@@ -196,11 +226,9 @@ def analyze(symbol: str, period="1y"):
         }
 
     except Exception as e:
+        # show minimal debug info and return None
         st.error(f"analyze() error for {symbol}: {e}")
-        import traceback
-        st.text(traceback.format_exc())
         return None
-
 
 # -----------------------
 # Main UI
@@ -209,101 +237,95 @@ st.title("📊 Indian Stock Agent – EMA + RSI Alert Bot")
 
 if watchlist_df.empty or "Symbol" not in watchlist_df.columns:
     st.warning("⚠️ No valid 'Symbol' column found in your watchlist Excel file.")
+    symbols = []
 else:
     symbols = watchlist_df["Symbol"].dropna().astype(str).tolist()
 
-    # Static placeholder table shown at top
-    st.subheader("📋 Combined Summary Table")
-    initial_df = pd.DataFrame({
-        "Symbol": symbols,
-        "CMP": ["" for _ in symbols],
-        "52W_Low": ["" for _ in symbols],
-        "52W_High": ["" for _ in symbols],
-        "EMA200": ["" for _ in symbols],
-        "RSI14": ["" for _ in symbols],
-        "Signal": ["" for _ in symbols],
-    })
-    summary_placeholder = st.empty()
-    summary_placeholder.dataframe(initial_df, use_container_width=True, hide_index=True)
-    last_scan_time = st.caption("Will auto-update after scanning.")
+# Combined summary placeholder (only one)
+st.subheader("📋 Combined Summary Table")
+initial_df = pd.DataFrame({
+    "Symbol": symbols if symbols else [],
+    "CMP": ["" for _ in symbols] if symbols else [],
+    "52W_Low": ["" for _ in symbols] if symbols else [],
+    "52W_High": ["" for _ in symbols] if symbols else [],
+    "EMA200": ["" for _ in symbols] if symbols else [],
+    "RSI14": ["" for _ in symbols] if symbols else [],
+    "Signal": ["" for _ in symbols] if symbols else [],
+})
+summary_placeholder = st.empty()
+summary_placeholder.dataframe(initial_df, use_container_width=True, hide_index=True)
+last_scan_time = st.caption("Will auto-update after scanning.")
 
-    # Controls section
-    st.subheader("⚙️ Controls")
+# Controls
+st.subheader("⚙️ Controls")
+col1, col2 = st.columns([1, 2])
 
-    col1, col2 = st.columns([1, 2])
+with col1:
+    run_now = st.button("Run Scan Now", key="run_now_btn")
+    auto = st.checkbox("Enable Auto-scan (local only)", key="auto_chk")
+    interval = st.number_input("Interval (sec)", value=60, step=5, min_value=5, key="interval_input")
 
-    with col1:
-        run_now = st.button("Run Scan Now", key="run_now_btn")
-        auto = st.checkbox("Enable Auto-scan (local only)", key="auto_chk")
-        interval = st.number_input("Interval (sec)", value=60, step=5, min_value=5, key="interval_input")
+with col2:
+    st.markdown("**Status:**")
+    st.write(f"- GitHub Repo: `{GITHUB_REPO or 'N/A'}`")
+    st.write(f"- Token: {'✅' if GITHUB_TOKEN else '❌'}")
+    try:
+        st.caption(f"yfinance version: {yf.__version__}")
+    except Exception:
+        pass
 
-    with col2:
-        st.markdown("**Status:**")
-        st.write(f"- GitHub Repo: `{GITHUB_REPO or 'N/A'}`")
-        st.write(f"- Token: {'✅' if GITHUB_TOKEN else '❌'}")
-        try:
-            st.caption(f"yfinance version: {yf.__version__}")
-        except Exception:
-            pass
-
-
-# Run Scan
+# -----------------------
+# Run scan
+# -----------------------
 def run_scan():
+    if not symbols:
+        st.warning("No symbols to scan.")
+        return
+
     results = []
-    for symbol in symbols:
-        try:
-            df = yf.download(symbol, period="1y", interval="1d", progress=False, auto_adjust=True)
-            if df is None or df.empty:
-                st.warning(f"⚠️ No data for {symbol}")
-                continue
+    debug_lines = []
 
-            df = calc_rsi_ema(df)
+    for s in symbols:
+        debug_lines.append(f"Processing {s} ...")
+        r = analyze(s)
+        if r:
+            results.append(r)
+            debug_lines.append(f"OK {s}: CMP={r['CMP']} EMA200={r['EMA200']} RSI={r['RSI14']}")
+        else:
+            debug_lines.append(f"No result for {s}")
+        # small delay to be polite to Yahoo
+        time.sleep(0.25)
 
-            cmp = df["Close"].iloc[-1]
-            ema200 = df["EMA200"].iloc[-1]
-            rsi14 = df["RSI14"].iloc[-1]
-            high_52w = df["Close"].rolling(252, min_periods=1).max().iloc[-1]
-            low_52w = df["Close"].rolling(252, min_periods=1).min().iloc[-1]
-
-            if cmp > ema200 and rsi14 < 30:
-                signal = "🔼 Oversold + Above EMA200"
-            elif cmp < ema200 and rsi14 > 70:
-                signal = "🔻 Overbought + Below EMA200"
-            else:
-                signal = "Neutral"
-
-            results.append({
-                "Symbol": symbol,
-                "CMP": round(cmp, 2),
-                "52W_Low": round(low_52w, 2),
-                "52W_High": round(high_52w, 2),
-                "EMA200": round(ema200, 2),
-                "RSI14": round(rsi14, 2),
-                "Signal": signal
-            })
-
-        except Exception as e:
-            st.error(f"{symbol}: {e}")
-
-    # Update the main combined summary table
     if results:
-        df = pd.DataFrame(results)
-        summary_placeholder.dataframe(df, use_container_width=True, hide_index=True)
+        df_result = pd.DataFrame(results)
+        # ensure consistent column order
+        cols = ["Symbol", "CMP", "52W_Low", "52W_High", "EMA200", "RSI14", "Signal"]
+        df_result = df_result[cols]
+        summary_placeholder.dataframe(df_result, use_container_width=True, hide_index=True)
         last_scan_time.caption(f"Last scan: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     else:
         summary_placeholder.warning("No valid data fetched.")
 
+    # show debug in expander
+    if debug_lines:
+        with st.expander("🔍 Debug details (click to expand)"):
+            for l in debug_lines:
+                st.text(l)
 
 # Run button
 if run_now:
     run_scan()
 
-# Optional auto-refresh for background scans
+# Optional auto-refresh
 try:
     from streamlit_autorefresh import st_autorefresh
     if auto:
+        # trigger rerun using autorefresh; the app will rerun and re-evaluate run_now/auto
         st_autorefresh(interval=int(interval) * 1000, key="autorefresh")
         st.info(f"🔁 Auto-scan active — every {interval} seconds")
+        # run on this render too
         run_scan()
 except Exception:
     st.info("Optional: pip install streamlit-autorefresh for background scans")
+
+# end of file
