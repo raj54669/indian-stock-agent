@@ -194,73 +194,64 @@ def send_telegram(message: str):
 # -----------------------
 def calc_rsi_ema(symbol: str, period_days="1y"):
     """
-    Fetches historical data for `symbol` and computes EMA200 + RSI14.
-    Fully compatible with Streamlit Cloud and Yahoo Finance.
+    Fetch historical data and compute EMA200 + RSI14 safely, even if
+    fewer than 200 rows are available (e.g., 1y NSE tickers).
     """
     import numpy as np
-
     try:
-        # --------------------------
-        # 1️⃣ Primary fetch attempt
-        # --------------------------
+        # 1️⃣ Download with fallback
         df = yf.download(
             symbol,
             period=period_days,
             interval="1d",
             progress=False,
-            group_by="ticker",
             auto_adjust=True,
             threads=False,
         )
-
-        # If Yahoo returns multi-index columns, flatten them
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = [c[1] if isinstance(c, tuple) else c for c in df.columns]
 
-        # --------------------------
-        # 2️⃣ Fallback fetch attempt
-        # --------------------------
         if df is None or df.empty or "Close" not in df.columns:
             t = yf.Ticker(symbol)
             df = t.history(period=period_days, interval="1d", auto_adjust=True)
             if isinstance(df.columns, pd.MultiIndex):
                 df.columns = [c[1] if isinstance(c, tuple) else c for c in df.columns]
 
-        # --------------------------
-        # 3️⃣ Final validation
-        # --------------------------
         if df is None or df.empty or "Close" not in df.columns:
-            st.error(f"❌ No valid Close data found for {symbol}.")
+            st.error(f"❌ No valid Close data for {symbol}")
             return None
 
-        # Show quick debug info (visible in UI only)
         st.write(f"✅ {symbol}: {len(df)} rows, cols={list(df.columns)}")
 
-        # --------------------------
-        # 4️⃣ EMA200 + RSI14 calculation
-        # --------------------------
-        df = df.dropna(subset=["Close"])
-        if len(df) < 15:
-            st.warning(f"⚠️ Not enough data for {symbol} (rows={len(df)})")
-            return None
+        # 2️⃣ Compute EMA200 and RSI14
+        df = df.copy().dropna(subset=["Close"])
 
-        # EMA200
-        df["EMA200"] = df["Close"].ewm(span=200, adjust=False).mean()
+        # Even if <200 rows, still compute EMA
+        df["EMA200"] = df["Close"].ewm(span=min(200, len(df)), adjust=False).mean()
 
-        # RSI14
         delta = df["Close"].diff()
         gain = np.where(delta > 0, delta, 0)
         loss = np.where(delta < 0, -delta, 0)
-        roll_up = pd.Series(gain).rolling(14).mean()
-        roll_down = pd.Series(loss).rolling(14).mean()
-        rs = roll_up / roll_down
+        roll_up = pd.Series(gain).rolling(window=14, min_periods=1).mean()
+        roll_down = pd.Series(loss).rolling(window=14, min_periods=1).mean()
+        rs = roll_up / np.where(roll_down == 0, np.nan, roll_down)
         df["RSI14"] = 100 - (100 / (1 + rs))
 
-        df = df.dropna(subset=["EMA200", "RSI14"])
+        # 3️⃣ Drop rows only where both indicators are NaN
+        df = df.dropna(subset=["EMA200", "RSI14"], how="all")
+        if df.empty:
+            st.warning(f"⚠️ Computed EMA/RSI are all NaN for {symbol}")
+            return None
+
+        st.write(f"ℹ️ {symbol} last computed values:")
+        st.write(df.tail(3)[["Close", "EMA200", "RSI14"]])
+
         return df
 
     except Exception as e:
         st.error(f"⚠️ Fetch/Calc error for {symbol}: {e}")
+        import traceback
+        st.error(traceback.format_exc())
         return None
 
 def analyze(symbol):
