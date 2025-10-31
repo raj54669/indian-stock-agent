@@ -106,18 +106,6 @@ if not use_uploaded:
     watchlist_df = load_excel_from_github()
     st.sidebar.info("Using GitHub watchlist as default source")
 
-# ---- Create placeholder combined table (empty data for now) ----
-cols = ["Symbol", "CMP", "52W_Low", "52W_High", "EMA200", "RSI14", "Signal"]
-combined_df = pd.DataFrame(columns=cols)
-
-# Fill with symbols from watchlist, rest empty
-combined_df["Symbol"] = watchlist_df["Symbol"].dropna().astype(str)
-combined_df[["CMP", "52W_Low", "52W_High", "EMA200", "RSI14", "Signal"]] = ""
-
-# Display at top (before controls)
-st.subheader("📊 Combined Summary Table")
-st.dataframe(combined_df, use_container_width=True, hide_index=True)
-st.caption("Will auto-update after scanning.")
 
 # -----------------------
 # Telegram Helper
