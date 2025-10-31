@@ -317,19 +317,21 @@ col1, col2 = st.columns([1, 2])
 
 with col1:
     run_now = st.button("Run Scan Now", key="run_now_btn")
-
     interval = st.number_input("Interval (sec)", value=60, step=5, min_value=5, key="interval_input")
 
-    auto_col1, auto_col2 = st.columns([1, 3])
-    with auto_col1:
-        auto = st.checkbox("Enable Auto-scan", key="auto_chk")
+    # Inline checkbox (fix line wrapping)
+    auto = st.checkbox("Enable Auto-scan", key="auto_chk")
 
 with col2:
     st.markdown("**Status:**")
     st.write(f"- GitHub Repo: `{GITHUB_REPO or 'N/A'}`")
     st.write(f"- Token: {'✅' if GITHUB_TOKEN else '❌'}")
     if auto:
-        st.write(f"🔁 Auto-scan active — every {interval} seconds")
+        st.markdown(
+            f"<span style='margin-left:10px;'>🔁 Auto-scan active — every {interval} seconds</span>",
+            unsafe_allow_html=True
+        )
+
 
 # Move yfinance version info into sidebar
 try:
