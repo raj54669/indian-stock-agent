@@ -141,19 +141,17 @@ def calc_rsi_ema(df: pd.DataFrame) -> pd.DataFrame:
     Accepts a DataFrame with a 'Close' column (numeric). Returns df with EMA200, RSI14, 52W_High, 52W_Low.
     """
     df = df.copy()
-    # ensure Close exists
     if "Close" not in df.columns:
         raise ValueError("DataFrame must contain 'Close' column")
 
-    # convert to float series
+    # ensure numeric close prices
     close = pd.to_numeric(df["Close"], errors="coerce")
-    df["Close"] = close
 
     # EMA200
     span_val = 200 if len(close) >= 200 else max(2, len(close))
     df["EMA200"] = close.ewm(span=span_val, adjust=False).mean()
 
-    # RSI14 using Wilder's smoothing
+    # RSI14 calculation
     delta = close.diff()
     gain = delta.clip(lower=0)
     loss = (-delta).clip(lower=0)
@@ -162,13 +160,14 @@ def calc_rsi_ema(df: pd.DataFrame) -> pd.DataFrame:
     avg_loss = loss.ewm(alpha=1/14, adjust=False, min_periods=14).mean()
 
     rs = avg_gain / avg_loss.replace(0, np.nan)
-    df["RSI14"] = 100.0 - (100.0 / (1.0 + rs))
+    df["RSI14"] = 100 - (100 / (1 + rs))
 
-    # 52-week high/low (approx 252 trading days)
+    # 52-week high/low
     df["52W_High"] = close.rolling(window=252, min_periods=1).max()
     df["52W_Low"] = close.rolling(window=252, min_periods=1).min()
 
     return df
+
 
 # -----------------------
 # Analyzer: download & return single-row dict
