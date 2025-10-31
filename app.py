@@ -192,84 +192,155 @@ def send_telegram(message: str):
 # -----------------------
 # Stock Analysis
 # -----------------------
-def calc_rsi_ema(symbol: str, period_days="1y"):
+def calc_rsi_ema(symbol: str, period_days="1y", max_retries=3):
     """
-    Fetch daily 1-year data for `symbol` and compute:
-      - EMA200
-      - RSI14
-      - 52-week High/Low
-    Returns the last row with these indicators.
+    Robust fetch + compute:
+     - Try multiple fetching strategies (Ticker.history, download)
+     - Retry a few times with short backoff
+     - Compute EMA200 and RSI14 (Wilder) on daily data
+     - Return a DataFrame (full history) or None
     """
     import numpy as np
-
+    import time
     try:
-        df = yf.download(symbol, period=period_days, interval="1d", progress=False, auto_adjust=True)
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = [c[1] if isinstance(c, tuple) else c for c in df.columns]
+        last_exc = None
+        for attempt in range(1, max_retries + 1):
+            try:
+                # Strategy A: Ticker.history (often more reliable in some environments)
+                t = yf.Ticker(symbol)
+                df = t.history(period=period_days, interval="1d", auto_adjust=True)
+                if isinstance(df.columns, pd.MultiIndex):
+                    df.columns = [c[1] if isinstance(c, tuple) else c for c in df.columns]
 
-        if df.empty or "Close" not in df.columns:
-            st.error(f"No data for {symbol}")
+                # Quick validation
+                if df is not None and not df.empty and "Close" in df.columns:
+                    st.write(f"fetch ok (strategy A) for {symbol}: rows={len(df)} cols={list(df.columns)}")
+                    break
+
+                # Strategy B: download with explicit args
+                df = yf.download(symbol, period=period_days, interval="1d", progress=False, auto_adjust=True, threads=False)
+                if isinstance(df.columns, pd.MultiIndex):
+                    df.columns = [c[1] if isinstance(c, tuple) else c for c in df.columns]
+
+                if df is not None and not df.empty and "Close" in df.columns:
+                    st.write(f"fetch ok (strategy B) for {symbol}: rows={len(df)} cols={list(df.columns)}")
+                    break
+
+                # Strategy C: try longer period (2y) or 'max' if 1y returned nothing
+                df = yf.download(symbol, period="2y", interval="1d", progress=False, auto_adjust=True, threads=False)
+                if isinstance(df.columns, pd.MultiIndex):
+                    df.columns = [c[1] if isinstance(c, tuple) else c for c in df.columns]
+
+                if df is not None and not df.empty and "Close" in df.columns:
+                    st.write(f"fetch ok (strategy C) for {symbol}: rows={len(df)} cols={list(df.columns)}")
+                    break
+
+                # Nothing worked this attempt
+                last_exc = f"attempt {attempt}: no valid Close"
+                st.write(f"attempt {attempt} for {symbol} returned no valid data")
+            except Exception as e:
+                last_exc = e
+                st.write(f"attempt {attempt} fetch error for {symbol}: {e}")
+            # short backoff
+            time.sleep(0.5)
+
+        # Final check
+        if df is None or df.empty or "Close" not in df.columns:
+            st.error(f"No data for {symbol} after {max_retries} attempts. Last error: {last_exc}")
             return None
 
+        # compute indicators (safe on small series)
         df = df.dropna(subset=["Close"]).copy()
+        # EMA200 computed even if <200 rows (span=min)
+        df["EMA200"] = df["Close"].ewm(span=min(200, len(df)), adjust=False).mean()
 
-        # --- EMA200 ---
-        df["EMA200"] = df["Close"].ewm(span=200, adjust=False).mean()
-
-        # --- RSI14 (Wilder's method) ---
+        # RSI14 - Wilder smoothing
         delta = df["Close"].diff()
         gain = delta.where(delta > 0, 0.0)
         loss = -delta.where(delta < 0, 0.0)
-        avg_gain = gain.ewm(alpha=1/14, min_periods=14, adjust=False).mean()
-        avg_loss = loss.ewm(alpha=1/14, min_periods=14, adjust=False).mean()
+        avg_gain = gain.ewm(alpha=1/14, min_periods=1, adjust=False).mean()
+        avg_loss = loss.ewm(alpha=1/14, min_periods=1, adjust=False).mean()
         rs = avg_gain / avg_loss.replace(0, np.nan)
         df["RSI14"] = 100 - (100 / (1 + rs))
 
-        # --- 52-week high/low (last 252 trading days) ---
+        # 52-week high/low
         df["52W_High"] = df["Close"].rolling(window=252, min_periods=1).max()
         df["52W_Low"]  = df["Close"].rolling(window=252, min_periods=1).min()
 
+        # Debug: show last 1-3 computed rows
+        try:
+            st.write(f"Computed indicators for {symbol} - last rows:")
+            st.write(df.tail(3)[["Close", "EMA200", "RSI14"]])
+        except Exception:
+            pass
+
+        return df
+
+    except Exception as e:
+        st.error(f"Fetch/Calc exception for {symbol}: {e}")
+        import traceback
+        st.error(traceback.format_exc())
+        return None
+def analyze(symbol):
+    """
+    Use calc_rsi_ema to get the full DataFrame, then extract the latest indicators as a single dict.
+    """
+    try:
+        df = calc_rsi_ema(symbol)
+        if df is None or df.empty:
+            st.warning(f"No valid DataFrame returned from calc_rsi_ema for {symbol}")
+            return None
+
         last = df.iloc[-1]
+        cmp_ = float(last["Close"])
+        ema200 = float(last["EMA200"]) if not pd.isna(last["EMA200"]) else None
+        rsi14 = float(last["RSI14"]) if not pd.isna(last["RSI14"]) else None
+        low52 = float(last.get("52W_Low", pd.NA)) if "52W_Low" in last.index else None
+        high52 = float(last.get("52W_High", pd.NA)) if "52W_High" in last.index else None
+
+        # Signal logic per your spec
+        signal = "Neutral"
+        if ema200 and rsi14 is not None:
+            if cmp_ > ema200 and rsi14 < 30:
+                signal = "BUY"
+            elif cmp_ < ema200 and rsi14 > 70:
+                signal = "SELL"
+
         return {
             "Symbol": symbol,
-            "CMP": round(last["Close"], 2),
-            "52W_Low": round(last["52W_Low"], 2),
-            "52W_High": round(last["52W_High"], 2),
-            "EMA200": round(last["EMA200"], 2),
-            "RSI14": round(last["RSI14"], 2),
+            "CMP": round(cmp_, 2),
+            "52W_Low": round(low52, 2) if low52 is not None else None,
+            "52W_High": round(high52, 2) if high52 is not None else None,
+            "EMA200": round(ema200, 2) if ema200 is not None else None,
+            "RSI14": round(rsi14, 2) if rsi14 is not None else None,
+            "Signal": signal
         }
 
     except Exception as e:
-        st.error(f"Error in calc_rsi_ema for {symbol}: {e}")
+        st.error(f"analyze() error for {symbol}: {e}")
+        import traceback
+        st.error(traceback.format_exc())
         return None
+# -----------------------
+# Controls (unique keys)
+# -----------------------
+st.subheader("⚙️ Controls")
+col1, col2 = st.columns([1, 2])
+with col1:
+    run_now = st.button("Run Scan Now", key="run_now_btn")
+    auto = st.checkbox("Enable Auto-scan (local only)", key="auto_chk")
+    interval = st.number_input("Interval (sec)", value=60, step=5, min_value=5, key="interval_input")
+with col2:
+    st.write("Status:")
+    st.write(f"- GitHub Repo: {GITHUB_REPO or 'N/A'}")
+    st.write(f"- Token: {'✅' if GITHUB_TOKEN else '❌'}")
+    try:
+        st.caption(f"yfinance version: {yf.__version__}")
+    except Exception:
+        pass
 
-def analyze(symbol):
-    """Return one-row dict for combined table."""
-    row = calc_rsi_ema(symbol)
-    if not row:
-        return None
-
-    cmp_ = row["CMP"]
-    ema  = row["EMA200"]
-    rsi  = row["RSI14"]
-
-    # --- Signal logic ---
-    signal = "Neutral"
-    if cmp_ > ema and rsi < 30:
-        signal = "BUY"
-    elif cmp_ < ema and rsi > 70:
-        signal = "SELL"
-
-    row["Signal"] = signal
-    return row
-
-
-# =============================
-# 🧠 Stock Scanning & Analysis
-# =============================
-
+# Unified scan routine
 def run_scan_once():
-    """Fetch & analyze all stocks; display combined table."""
     if watchlist_df is None or "Symbol" not in watchlist_df.columns:
         st.error("No watchlist available")
         return [], []
@@ -284,19 +355,15 @@ def run_scan_once():
             if r:
                 results.append(r)
                 if r["Signal"] in ("BUY", "SELL"):
-                    alerts.append(
-                        f"{s}: {r['Signal']} "
-                        f"(CMP={r['CMP']}, EMA200={r['EMA200']}, RSI={r['RSI14']})"
-                    )
+                    alerts.append(f"{s}: {r['Signal']} (CMP={r['CMP']}, EMA200={r['EMA200']}, RSI={r['RSI14']})")
+            else:
+                st.write(f"No data/result for {s}")
             time.sleep(0.25)
 
     if results:
         df_result = pd.DataFrame(results)
         st.success("✅ Scan complete — latest results:")
-        st.dataframe(
-            df_result[["Symbol", "CMP", "52W_Low", "52W_High", "EMA200", "RSI14", "Signal"]],
-            use_container_width=True
-        )
+        st.dataframe(df_result[["Symbol", "CMP", "52W_Low", "52W_High", "EMA200", "RSI14", "Signal"]], use_container_width=True)
         st.caption(f"Last scan completed at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     else:
         st.info("ℹ️ No valid results from scan")
@@ -304,41 +371,25 @@ def run_scan_once():
     if alerts:
         msg = "⚠️ Stock Alerts:\n" + "\n".join(alerts)
         st.warning(msg)
-        send_telegram(msg)
+        # send Telegram but only if configured
+        if TELEGRAM_TOKEN and CHAT_ID:
+            send_telegram(msg)
 
     return results, alerts
 
-# =============================
-# 🧭 Controls (unique widget keys to avoid duplicate IDs)
-# =============================
-st.subheader("⚙️ Controls")
-col1, col2 = st.columns([1, 2])
 
-with col1:
-    # assign explicit keys so Streamlit can re-run safely without duplicate-id errors
-    run_now = st.button("Run Scan Now", key="run_now_btn")
-    auto = st.checkbox("Enable Auto-scan (local only)", key="auto_chk")
-    interval = st.number_input("Interval (sec)", value=60, step=5, min_value=5, key="interval_input")
-
-with col2:
-    st.write("Status:")
-    st.write(f"- GitHub Repo: {GITHUB_REPO or 'N/A'}")
-    st.write(f"- Token: {'✅' if GITHUB_TOKEN else '❌'}")
-    st.caption(f"yfinance version: {yf.__version__}")
-
-# Remove any old infinite while-loop. Use non-blocking autorefresh instead.
-# Run the scan now if the button was pressed
+# Run on demand
 if run_now:
     run_scan_once()
 
-# Auto-refresh (background scans) using streamlit-autorefresh (non-blocking)
+# Non-blocking auto-refresh
 try:
     from streamlit_autorefresh import st_autorefresh
     if auto:
-        # st_autorefresh triggers a rerun every interval*1000 ms.
-        # Use the same interval value provided by the user.
+        # triggers rerun every interval seconds
         st_autorefresh(interval=int(interval) * 1000, key="autorefresh")
-        # On rerun, the 'if run_now' above is False, so ensure we call the scan on each refresh:
+        # ensure scan runs on each rerun
         run_scan_once()
 except Exception:
-    st.info("Optional: install streamlit-autorefresh for background scans: pip install streamlit-autorefresh")
+    st.info("Optional: install streamlit-autorefresh (pip install streamlit-autorefresh) for background scans")
+
