@@ -82,6 +82,7 @@ if GITHUB_TOKEN and GITHUB_REPO:
 else:
     st.sidebar.error("GitHub credentials missing")
 
+st.sidebar.caption(f"yfinance version: {yf.__version__}")
 
 # -----------------------
 # Load Excel file from GitHub (REST)
@@ -191,29 +192,75 @@ def send_telegram(message: str):
 # -----------------------
 # Stock Analysis
 # -----------------------
-def calc_rsi_ema(symbol: str):
+def calc_rsi_ema(symbol: str, period_days="1y"):
+    """
+    Fetches historical data for `symbol` and computes EMA200 + RSI14.
+    Fully compatible with Streamlit Cloud and Yahoo Finance.
+    """
+    import numpy as np
+
     try:
-        df = yf.download(symbol, period="1y", interval="1d", progress=False)
-        if df is None or df.empty:
-            return None
-        if "Close" not in df.columns:
+        # --------------------------
+        # 1️⃣ Primary fetch attempt
+        # --------------------------
+        df = yf.download(
+            symbol,
+            period=period_days,
+            interval="1d",
+            progress=False,
+            group_by="ticker",
+            auto_adjust=True,
+            threads=False,
+        )
+
+        # If Yahoo returns multi-index columns, flatten them
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = [c[1] if isinstance(c, tuple) else c for c in df.columns]
+
+        # --------------------------
+        # 2️⃣ Fallback fetch attempt
+        # --------------------------
+        if df is None or df.empty or "Close" not in df.columns:
+            t = yf.Ticker(symbol)
+            df = t.history(period=period_days, interval="1d", auto_adjust=True)
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = [c[1] if isinstance(c, tuple) else c for c in df.columns]
+
+        # --------------------------
+        # 3️⃣ Final validation
+        # --------------------------
+        if df is None or df.empty or "Close" not in df.columns:
+            st.error(f"❌ No valid Close data found for {symbol}.")
             return None
 
+        # Show quick debug info (visible in UI only)
+        st.write(f"✅ {symbol}: {len(df)} rows, cols={list(df.columns)}")
+
+        # --------------------------
+        # 4️⃣ EMA200 + RSI14 calculation
+        # --------------------------
         df = df.dropna(subset=["Close"])
         if len(df) < 15:
+            st.warning(f"⚠️ Not enough data for {symbol} (rows={len(df)})")
             return None
 
+        # EMA200
         df["EMA200"] = df["Close"].ewm(span=200, adjust=False).mean()
+
+        # RSI14
         delta = df["Close"].diff()
-        gain = delta.clip(lower=0)
-        loss = -delta.clip(upper=0)
-        avg_gain = gain.rolling(window=14).mean()
-        avg_loss = loss.rolling(window=14).mean()
-        rs = avg_gain / avg_loss
+        gain = np.where(delta > 0, delta, 0)
+        loss = np.where(delta < 0, -delta, 0)
+        roll_up = pd.Series(gain).rolling(14).mean()
+        roll_down = pd.Series(loss).rolling(14).mean()
+        rs = roll_up / roll_down
         df["RSI14"] = 100 - (100 / (1 + rs))
+
+        df = df.dropna(subset=["EMA200", "RSI14"])
         return df
+
     except Exception as e:
-        st.error(f"yfinance error for {symbol}: {e}")
+        st.error(f"⚠️ Fetch/Calc error for {symbol}: {e}")
         return None
 
 def analyze(symbol):
@@ -227,12 +274,15 @@ def analyze(symbol):
     rsi = float(last["RSI14"])
 
     signal = "Neutral"
-    # Adjust your logic: RSI between 30-40 + price within ±2% of EMA
+    # Primary goal logic:
+    # BUY when price > EMA200 and RSI < 30
+    # SELL when price < EMA200 and RSI > 70
     dist_pct = (close - ema200) / ema200 * 100 if ema200 else None
-    if rsi >= 30 and rsi <= 40 and abs(dist_pct) <= 2:
+    if close > ema200 and rsi < 30:
         signal = "BUY"
-    elif rsi > 60 and dist_pct and dist_pct > 2:
+    elif close < ema200 and rsi > 70:
         signal = "SELL"
+
 
     return {
         "Symbol": symbol,
