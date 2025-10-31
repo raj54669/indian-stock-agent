@@ -7,6 +7,12 @@ import io, os, time, requests
 from datetime import datetime
 from typing import Optional
 
+# Optional auto-refresh support (safe import)
+try:
+    from streamlit_autorefresh import st_autorefresh
+except ImportError:
+    st_autorefresh = None
+
 # -----------------------
 # Streamlit Config
 # -----------------------
@@ -304,7 +310,7 @@ col1, col2 = st.columns([1, 2])
 
 with col1:
     run_now = st.button("Run Scan Now", key="run_now_btn")
-    auto = st.checkbox("Enable Auto-scan (local only)", key="auto_chk")
+    auto = st.checkbox("Enable Auto-scan", key="auto_chk")
     interval = st.number_input("Interval (sec)", value=60, step=5, min_value=5, key="interval_input")
 
 with col2:
