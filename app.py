@@ -75,17 +75,6 @@ def load_excel_from_github():
 # -----------------------
 st.sidebar.header("📂 Watchlist Management")
 uploaded_file = st.sidebar.file_uploader("Upload new watchlist (Excel)", type=["xlsx"])
-st.sidebar.header("Settings")
-
-if TELEGRAM_TOKEN and CHAT_ID:
-    st.sidebar.success("✅ Telegram configured")
-else:
-    st.sidebar.info("Telegram not configured — alerts disabled")
-
-if GITHUB_TOKEN and GITHUB_REPO:
-    st.sidebar.success("✅ GitHub secrets present")
-else:
-    st.sidebar.warning("GitHub credentials missing (set GITHUB_TOKEN and GITHUB_REPO)")
 
 # -----------------------
 # Load watchlist (uploaded override or GitHub)
@@ -107,6 +96,20 @@ if uploaded_file is not None:
 if not use_uploaded:
     watchlist_df = load_excel_from_github()
     st.sidebar.info("Using GitHub watchlist as default source")
+    
+# -----------------------
+st.sidebar.header("Settings")
+
+if TELEGRAM_TOKEN and CHAT_ID:
+    st.sidebar.success("✅ Telegram configured")
+else:
+    st.sidebar.info("Telegram not configured — alerts disabled")
+
+if GITHUB_TOKEN and GITHUB_REPO:
+    st.sidebar.success("✅ GitHub secrets present")
+else:
+    st.sidebar.warning("GitHub credentials missing (set GITHUB_TOKEN and GITHUB_REPO)")
+
 
 # sanitize watchlist: ensure Symbol column exists
 if not watchlist_df.empty:
