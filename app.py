@@ -142,16 +142,18 @@ def send_telegram(message: str):
 # -----------------------
 # RSI & EMA Calculation (365-day window)
 # -----------------------
+# -----------------------
+# RSI & EMA Calculation (exact trailing 365 days)
+# -----------------------
 def calc_rsi_ema(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
 
-    # Ensure Close is a clean numeric Series
-    close = df["Close"]
-    if isinstance(close, pd.DataFrame):
-        close = close.iloc[:, 0]
-    close = pd.to_numeric(close, errors="coerce").dropna()
+    # Ensure valid numeric Close
+    close = pd.to_numeric(df["Close"], errors="coerce")
+    df = df.loc[close.dropna().index]
 
-    df = df.loc[close.index]  # align in case of dropped NaN
+    if df.empty:
+        return df
 
     # --- EMA200 ---
     df["EMA200"] = close.ewm(span=min(200, len(close)), adjust=False).mean()
@@ -167,17 +169,24 @@ def calc_rsi_ema(df: pd.DataFrame) -> pd.DataFrame:
     rs = avg_gain / avg_loss.replace(0, np.nan)
     df["RSI14"] = 100 - (100 / (1 + rs))
 
-    # --- 52W High/Low over exact 365 days from today ---
+    # --- 52-week High/Low based on actual 365-day window ---
     cutoff_date = datetime.now() - pd.Timedelta(days=365)
     df_1y = df[df.index >= cutoff_date]
+
     if not df_1y.empty:
-        df["52W_High"] = df_1y["Close"].max()
-        df["52W_Low"] = df_1y["Close"].min()
+        high_52w = df_1y["Close"].max()
+        low_52w = df_1y["Close"].min()
     else:
-        df["52W_High"] = close.max()
-        df["52W_Low"] = close.min()
+        # fallback to full data if less than 1y available
+        high_52w = df["Close"].max()
+        low_52w = df["Close"].min()
+
+    # assign same values to all rows so last row can access
+    df["52W_High"] = high_52w
+    df["52W_Low"] = low_52w
 
     return df
+
 
 
 # -----------------------
