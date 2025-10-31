@@ -139,14 +139,19 @@ def send_telegram(message: str):
 # -----------------------
 # RSI & EMA Calculation (fixed)
 # -----------------------
+# -----------------------
+# RSI & EMA Calculation (365-day window)
+# -----------------------
 def calc_rsi_ema(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
 
-    # Ensure Close is a Series
+    # Ensure Close is a clean numeric Series
     close = df["Close"]
     if isinstance(close, pd.DataFrame):
         close = close.iloc[:, 0]
-    close = close.astype(float)
+    close = pd.to_numeric(close, errors="coerce").dropna()
+
+    df = df.loc[close.index]  # align in case of dropped NaN
 
     # --- EMA200 ---
     df["EMA200"] = close.ewm(span=min(200, len(close)), adjust=False).mean()
@@ -162,11 +167,18 @@ def calc_rsi_ema(df: pd.DataFrame) -> pd.DataFrame:
     rs = avg_gain / avg_loss.replace(0, np.nan)
     df["RSI14"] = 100 - (100 / (1 + rs))
 
-    # --- 52W High/Low ---
-    df["52W_High"] = close.rolling(252, min_periods=1).max()
-    df["52W_Low"] = close.rolling(252, min_periods=1).min()
+    # --- 52W High/Low over exact 365 days from today ---
+    cutoff_date = datetime.now() - pd.Timedelta(days=365)
+    df_1y = df[df.index >= cutoff_date]
+    if not df_1y.empty:
+        df["52W_High"] = df_1y["Close"].max()
+        df["52W_Low"] = df_1y["Close"].min()
+    else:
+        df["52W_High"] = close.max()
+        df["52W_Low"] = close.min()
 
     return df
+
 
 # -----------------------
 # Analyzer (fixed)
@@ -310,14 +322,12 @@ def run_scan():
     if results:
         df = pd.DataFrame(results)
         summary_placeholder.dataframe(df, use_container_width=True, hide_index=True)
-        last_scan_time.caption(f"Last scan: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        from datetime import timezone, timedelta 
+        ist = timezone(timedelta(hours=5, minutes=30)) 
+        last_scan_time.caption(f"Last scan: {datetime.now(ist).strftime('%Y-%m-%d %H:%M:%S %Z')}")
     else:
         summary_placeholder.warning("No valid data fetched.")
 
-    # --- Debug Section (only if there were errors) ---
-    if errors_found:
-        with st.expander("🪲 Debug details (click to expand)"):
-            st.text("\n".join(debug_logs))
 
 # Run button
 if run_now:
