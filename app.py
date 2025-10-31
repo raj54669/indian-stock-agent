@@ -139,34 +139,46 @@ def send_telegram(message: str):
 # -----------------------
 # RSI & EMA Calculation (fixed)
 # -----------------------
-def calc_rsi_ema(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.copy()
+# -----------------------
+# RSI & EMA Calculation (accurate 365-day window for 52W High/Low)
+# -----------------------
+from datetime import timedelta
 
-    # Ensure Close is a Series
-    close = df["Close"]
-    if isinstance(close, pd.DataFrame):
-        close = close.iloc[:, 0]
-    close = close.astype(float)
+def calc_rsi_ema(df):
+    df = df.copy()
+    df["Close"] = pd.to_numeric(df["Close"], errors="coerce")
+    df.dropna(subset=["Close"], inplace=True)
+    df.index = pd.to_datetime(df.index)
 
     # --- EMA200 ---
-    df["EMA200"] = close.ewm(span=min(200, len(close)), adjust=False).mean()
+    df["EMA200"] = df["Close"].ewm(span=200, adjust=False, min_periods=1).mean()
 
     # --- RSI14 ---
-    delta = close.diff()
-    gain = delta.clip(lower=0)
-    loss = -delta.clip(upper=0)
-
+    delta = df["Close"].diff()
+    gain = delta.where(delta > 0, 0.0)
+    loss = -delta.where(delta < 0, 0.0)
     avg_gain = gain.ewm(alpha=1/14, min_periods=14, adjust=False).mean()
     avg_loss = loss.ewm(alpha=1/14, min_periods=14, adjust=False).mean()
-
     rs = avg_gain / avg_loss.replace(0, np.nan)
     df["RSI14"] = 100 - (100 / (1 + rs))
 
-    # --- 52W High/Low ---
-    df["52W_High"] = close.rolling(252, min_periods=1).max()
-    df["52W_Low"] = close.rolling(252, min_periods=1).min()
+    # --- Exact 365-day 52-week high/low window ---
+    one_year_ago = df.index.max() - timedelta(days=365)
+    df_1y = df[df.index >= one_year_ago]
+
+    if not df_1y.empty:
+        last_high = df_1y["Close"].max()
+        last_low = df_1y["Close"].min()
+    else:
+        last_high = df["Close"].max()
+        last_low = df["Close"].min()
+
+    # Add static columns for easy access
+    df["52W_High"] = last_high
+    df["52W_Low"] = last_low
 
     return df
+
 
 # -----------------------
 # Analyzer (fixed)
@@ -310,7 +322,9 @@ def run_scan():
     if results:
         df = pd.DataFrame(results)
         summary_placeholder.dataframe(df, use_container_width=True, hide_index=True)
-        last_scan_time.caption(f"Last scan: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        from datetime import timedelta, timezone 
+        ist = timezone(timedelta(hours=5, minutes=30)) 
+        last_scan_time.caption(f"Last scan (IST): {datetime.now(ist).strftime('%Y-%m-%d %H:%M:%S')}")
     else:
         summary_placeholder.warning("No valid data fetched.")
 
