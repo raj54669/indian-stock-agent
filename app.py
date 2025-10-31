@@ -191,109 +191,80 @@ def send_telegram(message: str):
 # -----------------------
 # Stock Analysis
 # -----------------------
-def calc_rsi_ema(symbol: str):
+def calc_rsi_ema(symbol: str, period="2y"):
     """
-    Fetches 1-day interval historical data, computes EMA200 and RSI14,
-    and returns a dataframe plus the last computed row (latest indicators).
+    Fetch daily historical data for `symbol` and compute EMA200 and RSI14.
+    Returns a pandas DataFrame (with EMA200, RSI14, 52W_High, 52W_Low).
+    Returns None on failure.
     """
-
-    import pandas as pd
     import numpy as np
-    import yfinance as yf
-    from datetime import datetime, timedelta
-
     try:
-        # --- Fetch last 400 trading days for context ---
-        end_date = datetime.now()
-        start_date = end_date - timedelta(days=400)
+        # fetch daily data; use 2y to ensure >= 200 trading days where possible
+        df = yf.download(symbol, period=period, interval="1d", progress=False, auto_adjust=True)
 
-        data = yf.download(symbol, start=start_date, end=end_date, interval="1d", progress=False)
-
-        if data is None or data.empty:
-            st.error(f"No valid data returned for {symbol}")
+        if df is None or df.empty:
+            # no data returned
             return None
 
-        # --- Compute EMA200 ---
-        data["EMA200"] = data["Close"].ewm(span=200, adjust=False).mean()
+        # make sure we have columns we expect and use Series (1-D)
+        if "Close" not in df.columns:
+            return None
 
-        # --- Compute RSI14 ---
-        delta = data["Close"].diff()
-        gain = np.where(delta > 0, delta, 0)
-        loss = np.where(delta < 0, -delta, 0)
+        # ensure Close is a 1-D Series (this avoids the 2-D error)
+        close = df["Close"].astype(float)
 
-        roll_up = pd.Series(gain).rolling(window=14).mean()
-        roll_down = pd.Series(loss).rolling(window=14).mean()
+        # compute EMA200 (safe when len < 200)
+        df["EMA200"] = close.ewm(span=min(200, len(close)), adjust=False).mean()
 
-        RS = roll_up / roll_down
-        RSI = 100.0 - (100.0 / (1.0 + RS))
-        data["RSI14"] = RSI.values
+        # compute RSI14 using Wilder's smoothing (alpha = 1/14)
+        delta = close.diff()
+        gain = delta.clip(lower=0)
+        loss = (-delta).clip(lower=0)
 
-        # --- Compute 52-week high and low ---
-        data["52W_High"] = data["High"].rolling(window=252, min_periods=1).max()
-        data["52W_Low"] = data["Low"].rolling(window=252, min_periods=1).min()
+        # Wilder smoothing (use ewm with alpha=1/14)
+        avg_gain = gain.ewm(alpha=1/14, adjust=False, min_periods=14).mean()
+        avg_loss = loss.ewm(alpha=1/14, adjust=False, min_periods=14).mean()
 
-        # --- Get latest row safely ---
-        last_row = data.iloc[-1].copy()
-        cmp_price = float(last_row["Close"])
-        ema200 = float(last_row["EMA200"])
-        rsi14 = float(last_row["RSI14"]) if not np.isnan(last_row["RSI14"]) else None
-        high_52w = float(last_row["52W_High"])
-        low_52w = float(last_row["52W_Low"])
+        rs = avg_gain / avg_loss.replace(0, np.nan)
+        df["RSI14"] = 100.0 - (100.0 / (1.0 + rs))
 
-        # --- Determine Signal ---
-        if rsi14 is None:
-            signal = "Neutral"
-        elif rsi14 < 30 and cmp_price > ema200:
-            signal = "BUY"
-        elif rsi14 > 70 and cmp_price < ema200:
-            signal = "SELL"
-        else:
-            signal = "Neutral"
+        # 52-week high/low (approx 252 trading days)
+        df["52W_High"] = close.rolling(window=252, min_periods=1).max()
+        df["52W_Low"] = close.rolling(window=252, min_periods=1).min()
 
-        # --- Build summary result ---
-        result = {
-            "Symbol": symbol,
-            "CMP": round(cmp_price, 2),
-            "52W_High": round(high_52w, 2),
-            "52W_Low": round(low_52w, 2),
-            "EMA200": round(ema200, 2),
-            "RSI14": round(rsi14, 2) if rsi14 else None,
-            "Signal": signal,
-        }
-
-        # --- Optional: Debug mini preview ---
-        with st.expander(f"🔍 Debug {symbol}", expanded=False):
-            st.write(data.tail(3)[["Close", "EMA200", "RSI14"]])
-
-        return result
+        # return full df (with indicators)
+        return df
 
     except Exception as e:
+        # show minimal info in UI logs and return None
         st.error(f"Error in calc_rsi_ema for {symbol}: {e}")
         import traceback
         st.text(traceback.format_exc())
         return None
 
-        
-def analyze(symbol):
+def analyze(symbol: str):
     """
-    Use calc_rsi_ema to get the full DataFrame, then extract the latest indicators as a single dict.
+    Calls calc_rsi_ema and returns a single-row dict:
+    {'Symbol','CMP','52W_Low','52W_High','EMA200','RSI14','Signal'}
+    or None if data unavailable.
     """
     try:
         df = calc_rsi_ema(symbol)
         if df is None or df.empty:
-            st.warning(f"No valid DataFrame returned from calc_rsi_ema for {symbol}")
             return None
 
         last = df.iloc[-1]
-        cmp_ = float(last["Close"])
-        ema200 = float(last["EMA200"]) if not pd.isna(last["EMA200"]) else None
-        rsi14 = float(last["RSI14"]) if not pd.isna(last["RSI14"]) else None
-        low52 = float(last.get("52W_Low", pd.NA)) if "52W_Low" in last.index else None
-        high52 = float(last.get("52W_High", pd.NA)) if "52W_High" in last.index else None
 
-        # Signal logic per your spec
+        # use .get and pd.isna checks to avoid exceptions
+        cmp_ = float(last["Close"]) if "Close" in last.index and not pd.isna(last["Close"]) else None
+        ema200 = float(last["EMA200"]) if "EMA200" in last.index and not pd.isna(last["EMA200"]) else None
+        rsi14 = float(last["RSI14"]) if "RSI14" in last.index and not pd.isna(last["RSI14"]) else None
+        low52 = float(last["52W_Low"]) if "52W_Low" in last.index and not pd.isna(last["52W_Low"]) else None
+        high52 = float(last["52W_High"]) if "52W_High" in last.index and not pd.isna(last["52W_High"]) else None
+
+        # Signal logic: Buy if price>EMA200 and RSI<30; Sell if price<EMA200 and RSI>70
         signal = "Neutral"
-        if ema200 and rsi14 is not None:
+        if ema200 is not None and rsi14 is not None and cmp_ is not None:
             if cmp_ > ema200 and rsi14 < 30:
                 signal = "BUY"
             elif cmp_ < ema200 and rsi14 > 70:
@@ -301,7 +272,7 @@ def analyze(symbol):
 
         return {
             "Symbol": symbol,
-            "CMP": round(cmp_, 2),
+            "CMP": round(cmp_, 2) if cmp_ is not None else None,
             "52W_Low": round(low52, 2) if low52 is not None else None,
             "52W_High": round(high52, 2) if high52 is not None else None,
             "EMA200": round(ema200, 2) if ema200 is not None else None,
@@ -312,7 +283,7 @@ def analyze(symbol):
     except Exception as e:
         st.error(f"analyze() error for {symbol}: {e}")
         import traceback
-        st.error(traceback.format_exc())
+        st.text(traceback.format_exc())
         return None
 
 # =============================
@@ -342,63 +313,51 @@ with col2:
 # 🧠 Main Scan Function
 # =============================
 def run_scan_once():
-    """Fetch, analyze all stocks, and display unified table first."""
+    """Fetch & analyze all symbols and show unified summary table"""
     if watchlist_df is None or "Symbol" not in watchlist_df.columns:
         st.error("No watchlist available")
         return [], []
 
     symbols = watchlist_df["Symbol"].dropna().astype(str).tolist()
-    results, alerts = [], []
-    debug_info = []  # store debug notes instead of printing directly
+    results = []
+    alerts = []
+    debug_lines = []
 
     with st.spinner(f"Scanning {len(symbols)} symbols..."):
         for s in symbols:
-            try:
-                debug_info.append(f"Processing {s} ...")
-                r = analyze(s)
-                if r:
-                    results.append(r)
-                    debug_info.append(f"✔️ Completed {s}: RSI={r['RSI14']} EMA200={r['EMA200']} CMP={r['CMP']}")
-                    if r["Signal"] in ("BUY", "SELL"):
-                        alerts.append(
-                            f"{s}: {r['Signal']} (CMP={r['CMP']}, EMA200={r['EMA200']}, RSI={r['RSI14']})"
-                        )
-                else:
-                    debug_info.append(f"⚠️ No result for {s}")
-            except Exception as e:
-                debug_info.append(f"❌ Error for {s}: {e}")
+            debug_lines.append(f"Processing {s} ...")
+            r = analyze(s)
+            if r:
+                results.append(r)
+                debug_lines.append(f"OK {s}: CMP={r['CMP']} EMA200={r['EMA200']} RSI={r['RSI14']}")
+                if r["Signal"] in ("BUY", "SELL"):
+                    alerts.append(f"{s}: {r['Signal']} (CMP={r['CMP']}, EMA200={r['EMA200']}, RSI={r['RSI14']})")
+            else:
+                debug_lines.append(f"No result for {s}")
             time.sleep(0.25)
 
-    # --- Unified summary table at top ---
+    # Unified table (render first)
     st.markdown("---")
     st.subheader("📊 Combined Summary Table")
-
     if results:
         df_result = pd.DataFrame(results)
-        st.dataframe(
-            df_result[["Symbol", "CMP", "52W_Low", "52W_High", "EMA200", "RSI14", "Signal"]],
-            use_container_width=True,
-            hide_index=True,
-        )
-        st.caption(f"Last scan completed at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        st.dataframe(df_result[["Symbol", "CMP", "52W_Low", "52W_High", "EMA200", "RSI14", "Signal"]], use_container_width=True, hide_index=True)
+        st.caption(f"Last scan: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     else:
-        st.warning("⚠️ No valid results from scan")
+        st.warning("No valid results from scan")
 
-    # --- Alerts (Telegram + UI) ---
+    # Alerts
     if alerts:
         msg = "⚠️ Stock Alerts:\n" + "\n".join(alerts)
         st.warning(msg)
-        try:
-            if TELEGRAM_TOKEN and CHAT_ID:
-                send_telegram(msg)
-        except Exception as e:
-            st.error(f"Telegram send failed: {e}")
+        if TELEGRAM_TOKEN and CHAT_ID:
+            send_telegram(msg)
 
-    # --- Collapsible debug info (no clutter) ---
-    if debug_info:
+    # Collapsible debug panel
+    if debug_lines:
         with st.expander("🔍 Debug details (click to expand)"):
-            for line in debug_info:
-                st.text(line)
+            for l in debug_lines:
+                st.text(l)
 
     return results, alerts
 
