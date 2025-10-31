@@ -141,54 +141,49 @@ def send_telegram(message: str):
 # -----------------------
 def calc_indicators(df: pd.DataFrame) -> Optional[pd.DataFrame]:
     """
-    Input: a daily OHLC DataFrame with Date index and 'Close' column
-    Output: same DataFrame with EMA200, RSI14, 52W_High, 52W_Low columns added
+    Input: daily OHLC DataFrame with Date index and 'Close' column.
+    Output: same DataFrame with EMA200, RSI14, 52W_High, 52W_Low columns added.
+    Uses exact 365 calendar days from the latest available date.
     """
     try:
         if df is None or df.empty:
             return None
 
         df = df.copy()
-        # Ensure datetime index
         df.index = pd.to_datetime(df.index)
-        # Ensure numeric Close and drop NA
         df["Close"] = pd.to_numeric(df["Close"], errors="coerce")
         df = df.dropna(subset=["Close"])
         if df.empty:
             return None
 
-        # EMA200 on full available data (more stable); min_periods=1 so prints even if <200 rows
+        # --- EMA200 (stable, even for short data)
         df["EMA200"] = df["Close"].ewm(span=200, adjust=False, min_periods=1).mean()
 
-        # RSI14 using Wilder smoothing (alpha=1/14)
+        # --- RSI14 (Wilder’s method)
         delta = df["Close"].diff()
-        gain = delta.where(delta > 0, 0.0)
-        loss = -delta.where(delta < 0, 0.0)
-        avg_gain = gain.ewm(alpha=1/14, min_periods=14, adjust=False).mean()
-        avg_loss = loss.ewm(alpha=1/14, min_periods=14, adjust=False).mean()
+        gain = delta.clip(lower=0)
+        loss = -delta.clip(upper=0)
+        avg_gain = gain.ewm(alpha=1 / 14, min_periods=14, adjust=False).mean()
+        avg_loss = loss.ewm(alpha=1 / 14, min_periods=14, adjust=False).mean()
         rs = avg_gain / avg_loss.replace(0, np.nan)
-        df["RSI14"] = 100.0 - (100.0 / (1.0 + rs))
+        df["RSI14"] = 100 - (100 / (1 + rs))
 
-        # 52-week high/low based on exact last_date - 365 days (calendar days)
+        # --- 52-Week High/Low from exactly last 365 days
         last_date = df.index.max()
         cutoff = last_date - timedelta(days=365)
         df_1y = df[df.index >= cutoff]
         if not df_1y.empty:
-            h52 = df_1y["Close"].max()
-            l52 = df_1y["Close"].min()
+            df["52W_High"] = df_1y["Close"].max()
+            df["52W_Low"] = df_1y["Close"].min()
         else:
-            # fallback to full-history
-            h52 = df["Close"].max()
-            l52 = df["Close"].min()
-        # Put scalar values into columns so easier to display from last row
-        df["52W_High"] = h52
-        df["52W_Low"] = l52
+            df["52W_High"] = df["Close"].max()
+            df["52W_Low"] = df["Close"].min()
 
         return df
 
-    except Exception as e:
-        # Do not raise — return None and let caller handle debug
+    except Exception:
         return None
+
 
 # -----------------------
 # analyze(symbol) - downloads & returns single-row dict or None
@@ -294,21 +289,29 @@ def run_scan_once():
         order = symbols
         df_result = df_result.set_index("Symbol").reindex(order).reset_index()
         summary_placeholder.dataframe(df_result[cols], use_container_width=True, hide_index=True)
-        # Indian timezone timestamp
+        # Indian timezone timestamp (IST +5:30)
         IST = timezone(timedelta(hours=5, minutes=30))
-        last_scan_time.caption(f"Last scan: {datetime.now(IST).strftime('%Y-%m-%d %H:%M:%S %Z')}")
+        now_ist = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S IST")
+        last_scan_time.caption(f"Last scan: {now_ist}")
+
     else:
-        # show warning inside placeholder area
         summary_placeholder.warning("No valid data fetched.")
         last_scan_time.caption("")
 
-    # Alerts via Telegram
+    # Send alerts only once, after all processing
     if alerts:
         msg = "⚠️ Stock Alerts:\n" + "\n".join(alerts)
         st.warning(msg)
         send_telegram(msg)
 
+    # Show debug (only once, no duplicates)
+    if debug_lines:
+        with st.expander("🔍 Debug details (click to expand)"):
+            for line in debug_lines:
+                st.write(line)
+
     return results, debug_lines, alerts
+
 
 # -----------------------
 # Run / Auto-refresh wiring
