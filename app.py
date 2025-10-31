@@ -1,20 +1,19 @@
-# app.py — Indian Stock Agent (fixed & ready to paste)
-
+# app.py — Indian Stock Agent (ready-to-paste)
 import streamlit as st
 import pandas as pd
 import numpy as np
 import yfinance as yf
-import io, os, requests, time
-from datetime import datetime, timedelta, timezone
+import io, os, time, requests
+from datetime import datetime
 from typing import Optional
 
 # -----------------------
-# Page config
+# Streamlit Config
 # -----------------------
 st.set_page_config(page_title="📈 Indian Stock Agent – EMA + RSI Alert Bot", layout="wide")
 
 # -----------------------
-# Secrets helper
+# Secrets helpers
 # -----------------------
 def get_secret(key: str, default=None):
     try:
@@ -35,35 +34,24 @@ GITHUB_REPO = get_secret("GITHUB_REPO")
 GITHUB_BRANCH = get_secret("GITHUB_BRANCH", "main")
 GITHUB_FILE_PATH = get_secret("GITHUB_FILE_PATH", "watchlist.xlsx")
 
+# Telegram secrets
 TELEGRAM_TOKEN = get_secret_section("TELEGRAM_TOKEN", section="telegram")
 CHAT_ID = get_secret_section("CHAT_ID", section="telegram")
 
-# GitHub headers (for raw file)
+# -----------------------
+# GitHub headers
+# -----------------------
 def github_raw_headers():
-    auth_scheme = "Bearer" if str(GITHUB_TOKEN or "").startswith("github_pat_") else "token"
+    auth_scheme = "Bearer" if str(GITHUB_TOKEN).startswith("github_pat_") else "token"
     return {
-        "Authorization": f"{auth_scheme} {GITHUB_TOKEN}" if GITHUB_TOKEN else "",
+        "Authorization": f"{auth_scheme} {GITHUB_TOKEN}",
         "Accept": "application/vnd.github.v3.raw",
         "User-Agent": "streamlit-indian-stock-agent"
     }
 
 # -----------------------
-# Load watchlist (GitHub or upload)
+# Load Excel from GitHub
 # -----------------------
-st.sidebar.header("📂 Watchlist Management")
-uploaded_file = st.sidebar.file_uploader("Upload new watchlist (Excel)", type=["xlsx"])
-
-st.sidebar.header("Settings")
-if TELEGRAM_TOKEN and CHAT_ID:
-    st.sidebar.success("✅ Telegram configured")
-else:
-    st.sidebar.info("⚠️ Telegram not configured — alerts disabled")
-
-if GITHUB_TOKEN and GITHUB_REPO:
-    st.sidebar.success("✅ GitHub secrets present")
-else:
-    st.sidebar.warning("GitHub credentials missing (watchlist fetch disabled)")
-
 @st.cache_data(ttl=120)
 def load_excel_from_github():
     if not (GITHUB_TOKEN and GITHUB_REPO):
@@ -73,22 +61,44 @@ def load_excel_from_github():
         url = f"https://api.github.com/repos/{owner}/{repo}/contents/{GITHUB_FILE_PATH}?ref={GITHUB_BRANCH}"
         r = requests.get(url, headers=github_raw_headers(), timeout=10)
         if r.status_code == 200:
-            return pd.read_excel(io.BytesIO(r.content))
+            df = pd.read_excel(io.BytesIO(r.content))
+            return df
         else:
-            st.sidebar.error(f"GitHub fetch failed: {r.status_code}")
+            st.error(f"GitHub fetch failed: {r.status_code} - {r.text}")
             return pd.DataFrame()
     except Exception as e:
-        st.sidebar.error(f"Error loading from GitHub: {e}")
+        st.error(f"Error loading from GitHub: {e}")
         return pd.DataFrame()
 
+# -----------------------
+# Sidebar: upload + status
+# -----------------------
+st.sidebar.header("📂 Watchlist Management")
+uploaded_file = st.sidebar.file_uploader("Upload new watchlist (Excel)", type=["xlsx"])
+st.sidebar.header("Settings")
+
+if TELEGRAM_TOKEN and CHAT_ID:
+    st.sidebar.success("✅ Telegram configured")
+else:
+    st.sidebar.info("Telegram not configured — alerts disabled")
+
+if GITHUB_TOKEN and GITHUB_REPO:
+    st.sidebar.success("✅ GitHub secrets present")
+else:
+    st.sidebar.warning("GitHub credentials missing (set GITHUB_TOKEN and GITHUB_REPO)")
+
+# -----------------------
+# Load watchlist (uploaded override or GitHub)
+# -----------------------
 use_uploaded = False
+watchlist_df = pd.DataFrame()
 if uploaded_file is not None:
     try:
-        uploaded_watchlist = pd.read_excel(uploaded_file)
-        if "Symbol" not in uploaded_watchlist.columns:
+        df_up = pd.read_excel(uploaded_file)
+        if "Symbol" not in df_up.columns:
             st.sidebar.error("Uploaded file must contain a 'Symbol' column.")
         else:
-            watchlist_df = uploaded_watchlist
+            watchlist_df = df_up
             use_uploaded = True
             st.sidebar.success(f"✅ Using uploaded watchlist ({len(watchlist_df)} symbols)")
     except Exception as e:
@@ -98,154 +108,144 @@ if not use_uploaded:
     watchlist_df = load_excel_from_github()
     st.sidebar.info("Using GitHub watchlist as default source")
 
-# -----------------------
-# Page title & initial combined table (static)
-# -----------------------
-st.title("📊 Indian Stock Agent – EMA + RSI Alert Bot")
-
-cols = ["Symbol", "CMP", "52W_Low", "52W_High", "EMA200", "RSI14", "Signal"]
-
-if watchlist_df is None or watchlist_df.empty or "Symbol" not in watchlist_df.columns:
-    st.warning("⚠️ No valid watchlist found. Upload a watchlist with a column named `Symbol` or configure GitHub.")
-    # show an empty example so UI layout is consistent
-    example = pd.DataFrame({"Symbol": ["RELIANCE.NS", "INFY.NS"], "CMP": ["", ""], "52W_Low": ["", ""], "52W_High": ["", ""], "EMA200": ["", ""], "RSI14": ["", ""], "Signal": ["", ""]})
-    summary_placeholder = st.empty()
-    summary_placeholder.dataframe(example, use_container_width=True, hide_index=True)
-    symbols = []
-else:
-    symbols = watchlist_df["Symbol"].dropna().astype(str).tolist()
-    initial_df = pd.DataFrame({c: ["" if c != "Symbol" else s for s in symbols] for c in cols})
-    summary_placeholder = st.empty()
-    summary_placeholder.dataframe(initial_df, use_container_width=True, hide_index=True)
-    last_scan_time = st.empty()
-    last_scan_time.caption("Will auto-update after scanning.")
-
-st.caption("")  # small spacing
+# sanitize watchlist: ensure Symbol column exists
+if not watchlist_df.empty:
+    if "Symbol" in watchlist_df.columns:
+        watchlist_df["Symbol"] = watchlist_df["Symbol"].astype(str).str.strip()
+        watchlist_df = watchlist_df[watchlist_df["Symbol"] != ""]
+    else:
+        watchlist_df = pd.DataFrame()
 
 # -----------------------
-# Helpers
+# Telegram helper
 # -----------------------
 def send_telegram(message: str):
-    if not (TELEGRAM_TOKEN and CHAT_ID):
+    if not TELEGRAM_TOKEN or not CHAT_ID:
         return False
     try:
-        r = requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-                          data={"chat_id": CHAT_ID, "text": message}, timeout=10)
+        r = requests.post(
+            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+            data={"chat_id": CHAT_ID, "text": message},
+            timeout=10
+        )
         return r.status_code == 200
     except Exception as e:
-        st.warning(f"Telegram error: {e}")
+        st.warning(f"Telegram send error: {e}")
         return False
 
 # -----------------------
-# Indicators calculation (robust)
+# Indicator calc (expects DataFrame)
 # -----------------------
-def calc_indicators(df: pd.DataFrame) -> Optional[pd.DataFrame]:
-    """
-    Input: daily OHLC DataFrame with Date index and 'Close' column.
-    Output: same DataFrame with EMA200, RSI14, 52W_High, 52W_Low columns added.
-    Uses exact 365 calendar days from the latest available date.
-    """
-    try:
-        if df is None or df.empty:
-            return None
+# -----------------------
+# RSI & EMA Calculation (fixed)
+# -----------------------
+def calc_rsi_ema(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
 
-        df = df.copy()
-        df.index = pd.to_datetime(df.index)
-        df["Close"] = pd.to_numeric(df["Close"], errors="coerce").fillna(method="ffill").fillna(method="bfill")
-        df = df.dropna(subset=["Close"])
-        if df.empty:
-            return None
+    # Ensure Close is a Series
+    close = df["Close"]
+    if isinstance(close, pd.DataFrame):
+        close = close.iloc[:, 0]
+    close = close.astype(float)
 
-        # --- EMA200 (stable, even for short data)
-        df["EMA200"] = df["Close"].ewm(span=200, adjust=False, min_periods=1).mean()
+    # --- EMA200 ---
+    df["EMA200"] = close.ewm(span=min(200, len(close)), adjust=False).mean()
 
-        # --- RSI14 (Wilder’s method)
-        delta = df["Close"].diff()
-        gain = delta.clip(lower=0)
-        loss = -delta.clip(upper=0)
-        avg_gain = gain.ewm(alpha=1 / 14, min_periods=14, adjust=False).mean()
-        avg_loss = loss.ewm(alpha=1 / 14, min_periods=14, adjust=False).mean()
-        rs = avg_gain / avg_loss.replace(0, np.nan)
-        df["RSI14"] = 100 - (100 / (1 + rs))
+    # --- RSI14 ---
+    delta = close.diff()
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
 
-        # --- 52-Week High/Low from exactly last 365 days
-        last_date = df.index.max()
-        cutoff = last_date - timedelta(days=365)
-        df_1y = df[df.index >= cutoff]
-        if not df_1y.empty:
-            df["52W_High"] = df_1y["Close"].max()
-            df["52W_Low"] = df_1y["Close"].min()
-        else:
-            df["52W_High"] = df["Close"].max()
-            df["52W_Low"] = df["Close"].min()
+    avg_gain = gain.ewm(alpha=1/14, min_periods=14, adjust=False).mean()
+    avg_loss = loss.ewm(alpha=1/14, min_periods=14, adjust=False).mean()
 
-        return df
+    rs = avg_gain / avg_loss.replace(0, np.nan)
+    df["RSI14"] = 100 - (100 / (1 + rs))
 
-    except Exception:
-        return None
+    # --- 52W High/Low ---
+    df["52W_High"] = close.rolling(252, min_periods=1).max()
+    df["52W_Low"] = close.rolling(252, min_periods=1).min()
 
+    return df
 
 # -----------------------
-# analyze(symbol) - downloads & returns single-row dict or None
+# Analyzer (fixed)
 # -----------------------
 def analyze(symbol: str):
-    """
-    Download daily data for symbol (2y to ensure enough history), compute indicators,
-    and return a dict with required fields or None on failure.
-    """
     try:
-        # Download using yfinance; use 2y so EMA200 stable
-        df = yf.download(symbol, period="2y", interval="1d", progress=False, auto_adjust=True)
+        df = yf.download(symbol, period="1y", interval="1d", progress=False, auto_adjust=True)
         if df is None or df.empty:
-            raise RuntimeError("No data returned from yfinance")
+            raise ValueError(f"No data for {symbol}")
 
-        df_ind = calc_indicators(df)
-        if df_ind is None or df_ind.empty:
-            raise RuntimeError("Indicator calc failed or no numeric Close")
-
-        last = df_ind.iloc[-1]
+        df = calc_rsi_ema(df)
+        last = df.iloc[-1]
 
         cmp_ = float(last["Close"])
-        ema200 = float(last["EMA200"]) if not pd.isna(last["EMA200"]) else None
-        rsi14 = float(last["RSI14"]) if not pd.isna(last["RSI14"]) else None
-        low52 = float(last["52W_Low"]) if not pd.isna(last["52W_Low"]) else None
-        high52 = float(last["52W_High"]) if not pd.isna(last["52W_High"]) else None
+        ema200 = float(last["EMA200"])
+        rsi14 = float(last["RSI14"])
+        high_52w = float(last["52W_High"])
+        low_52w = float(last["52W_Low"])
 
-        # Signal rule (example)
+        # Determine signal
         signal = "Neutral"
-        if (ema200 is not None) and (rsi14 is not None):
-            if cmp_ > ema200 and rsi14 < 30:
-                signal = "BUY"
-            elif cmp_ < ema200 and rsi14 > 70:
-                signal = "SELL"
+        if cmp_ > ema200 and rsi14 < 30:
+            signal = "🔼 Oversold + Above EMA200"
+        elif cmp_ < ema200 and rsi14 > 70:
+            signal = "🔻 Overbought + Below EMA200"
 
         return {
             "Symbol": symbol,
             "CMP": round(cmp_, 2),
-            "52W_Low": round(low52, 2) if low52 is not None else None,
-            "52W_High": round(high52, 2) if high52 is not None else None,
-            "EMA200": round(ema200, 2) if ema200 is not None else None,
-            "RSI14": round(rsi14, 2) if rsi14 is not None else None,
+            "52W_Low": round(low_52w, 2),
+            "52W_High": round(high_52w, 2),
+            "EMA200": round(ema200, 2),
+            "RSI14": round(rsi14, 2),
             "Signal": signal
         }
 
     except Exception as e:
-        # Return exception message so caller can show in debug
-        return {"__error__": str(e), "Symbol": symbol}
+        st.error(f"analyze() error for {symbol}: {e}")
+        return None
+
+
 
 # -----------------------
-# Controls UI
+# Main UI
 # -----------------------
+st.title("📊 Indian Stock Agent – EMA + RSI Alert Bot")
+
+if watchlist_df.empty or "Symbol" not in watchlist_df.columns:
+    st.warning("⚠️ No valid 'Symbol' column found in your watchlist Excel file.")
+    symbols = []
+else:
+    symbols = watchlist_df["Symbol"].dropna().astype(str).tolist()
+
+# Combined summary placeholder (only one)
+st.subheader("📋 Combined Summary Table")
+initial_df = pd.DataFrame({
+    "Symbol": symbols if symbols else [],
+    "CMP": ["" for _ in symbols] if symbols else [],
+    "52W_Low": ["" for _ in symbols] if symbols else [],
+    "52W_High": ["" for _ in symbols] if symbols else [],
+    "EMA200": ["" for _ in symbols] if symbols else [],
+    "RSI14": ["" for _ in symbols] if symbols else [],
+    "Signal": ["" for _ in symbols] if symbols else [],
+})
+summary_placeholder = st.empty()
+summary_placeholder.dataframe(initial_df, use_container_width=True, hide_index=True)
+last_scan_time = st.caption("Will auto-update after scanning.")
+
+# Controls
 st.subheader("⚙️ Controls")
-col_left, col_right = st.columns([1, 1])  # balanced so Interval input not too wide
+col1, col2 = st.columns([1, 2])
 
-with col_left:
+with col1:
     run_now = st.button("Run Scan Now", key="run_now_btn")
     auto = st.checkbox("Enable Auto-scan (local only)", key="auto_chk")
     interval = st.number_input("Interval (sec)", value=60, step=5, min_value=5, key="interval_input")
 
-with col_right:
-    st.write("Status:")
+with col2:
+    st.markdown("**Status:**")
     st.write(f"- GitHub Repo: `{GITHUB_REPO or 'N/A'}`")
     st.write(f"- Token: {'✅' if GITHUB_TOKEN else '❌'}")
     try:
@@ -254,88 +254,85 @@ with col_right:
         pass
 
 # -----------------------
-# Main scanning function
+# Run Scan (with conditional debug output)
 # -----------------------
-def run_scan_once():
+def run_scan():
     results = []
-    debug_lines = []
-    alerts = []
+    debug_logs = []
+    errors_found = False
 
-    if not symbols:
-        st.warning("No symbols to scan.")
-        return results, debug_lines, alerts
+    for symbol in symbols:
+        try:
+            debug_logs.append(f"Processing {symbol} ...")
+            df = yf.download(symbol, period="1y", interval="1d", progress=False, auto_adjust=True)
 
-    with st.spinner(f"Scanning {len(symbols)} symbols..."):
-        for s in symbols:
-            debug_lines.append(f"Processing {s} ...")
-            r = analyze(s)
-            # r may be an error-dict or valid dict
-            if r is None:
-                debug_lines.append(f"❌ {s}: No result (None returned)")
-            elif "__error__" in r:
-                debug_lines.append(f"❌ {s}: {r['__error__']}")
+            if df is None or df.empty:
+                msg = f"⚠️ No data for {symbol}"
+                debug_logs.append(msg)
+                errors_found = True
+                continue
+
+            df = calc_rsi_ema(df)
+            last = df.iloc[-1]
+
+            cmp_ = float(last["Close"])
+            ema200 = float(last["EMA200"])
+            rsi14 = float(last["RSI14"])
+            high_52w = float(last["52W_High"])
+            low_52w = float(last["52W_Low"])
+
+            if cmp_ > ema200 and rsi14 < 30:
+                signal = "🔼 Oversold + Above EMA200"
+            elif cmp_ < ema200 and rsi14 > 70:
+                signal = "🔻 Overbought + Below EMA200"
             else:
-                results.append(r)
-                debug_lines.append(f"✅ {s}: CMP={r['CMP']} EMA200={r['EMA200']} RSI={r['RSI14']}")
-                if r["Signal"] in ("BUY", "SELL"):
-                    alerts.append(f"{s}: {r['Signal']} (CMP={r['CMP']}, EMA200={r['EMA200']}, RSI={r['RSI14']})")
-            # small delay to avoid heavy hammering
-            time.sleep(0.25)
+                signal = "Neutral"
 
-    # Update combined summary table (in-place)
+            results.append({
+                "Symbol": symbol,
+                "CMP": round(cmp_, 2),
+                "52W_Low": round(low_52w, 2),
+                "52W_High": round(high_52w, 2),
+                "EMA200": round(ema200, 2),
+                "RSI14": round(rsi14, 2),
+                "Signal": signal
+            })
+
+            debug_logs.append(f"✅ OK {symbol}: CMP={cmp_} EMA200={ema200} RSI={rsi14}")
+
+        except Exception as e:
+            msg = f"❌ {symbol}: {e}"
+            debug_logs.append(msg)
+            st.error(msg)
+            errors_found = True
+
+    # --- Update UI ---
     if results:
-        df_result = pd.DataFrame(results)
-        # Ensure order is same as watchlist (map)
-        order = symbols
-        df_result = df_result.set_index("Symbol").reindex(order).reset_index()
-        summary_placeholder.dataframe(df_result[cols], use_container_width=True, hide_index=True)
-        # Indian timezone timestamp (IST +5:30)
-        IST = timezone(timedelta(hours=5, minutes=30))
-        now_ist = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S IST")
-        last_scan_time.caption(f"Last scan: {now_ist}")
-
+        df = pd.DataFrame(results)
+        summary_placeholder.dataframe(df, use_container_width=True, hide_index=True)
+        last_scan_time.caption(f"Last scan: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     else:
         summary_placeholder.warning("No valid data fetched.")
-        last_scan_time.caption("")
 
-    # Send alerts only once, after all processing
-    if alerts:
-        msg = "⚠️ Stock Alerts:\n" + "\n".join(alerts)
-        st.warning(msg)
-        send_telegram(msg)
+    # --- Debug Section (only if there were errors) ---
+    if errors_found:
+        with st.expander("🪲 Debug details (click to expand)"):
+            st.text("\n".join(debug_logs))
 
-    # Show debug (only once, no duplicates)
-    if debug_lines:
-        with st.expander("🔍 Debug details (click to expand)"):
-            for line in debug_lines:
-                st.write(line)
-
-    return results, debug_lines, alerts
-
-
-# -----------------------
-# Run / Auto-refresh logic (NO duplicate debug)
-# -----------------------
-
-def render_debug(debug_lines):
-    """Show debug section once"""
-    if debug_lines:
-        with st.expander("🔍 Debug details (click to expand)"):
-            for line in debug_lines:
-                st.write(line)
-
-# --- Manual Run ---
+# Run button
 if run_now:
-    results, debug_lines, alerts = run_scan_once()
-    render_debug(debug_lines)
+    run_scan()
 
-# --- Auto-refresh (if enabled) ---
+# Optional auto-refresh
 try:
     from streamlit_autorefresh import st_autorefresh
     if auto:
+        # trigger rerun using autorefresh; the app will rerun and re-evaluate run_now/auto
         st_autorefresh(interval=int(interval) * 1000, key="autorefresh")
         st.info(f"🔁 Auto-scan active — every {interval} seconds")
-        results, debug_lines, alerts = run_scan_once()
-        render_debug(debug_lines)
+        # run on this render too
+        run_scan()
 except Exception:
-    pass
+    st.info("Optional: pip install streamlit-autorefresh for background scans")
+
+# end of file
