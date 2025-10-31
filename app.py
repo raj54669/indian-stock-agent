@@ -178,15 +178,27 @@ def calc_rsi_ema(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 # -----------------------
-# Analyzer (fixed)
+# Analyzer (robust: handles multi-index and 365-day range)
 # -----------------------
 def analyze(symbol: str):
     try:
-        df = yf.download(symbol, period="1y", interval="1d", progress=False, auto_adjust=True)
+        # fetch full 2 years (for EMA200 stability)
+        df = yf.download(symbol, period="2y", interval="1d", progress=False, auto_adjust=True)
         if df is None or df.empty:
             raise ValueError(f"No data for {symbol}")
 
+        # --- Handle multi-index DataFrame ---
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(-1)
+
+        if "Close" not in df.columns:
+            raise ValueError(f"Missing 'Close' in data for {symbol}")
+
+        # --- Compute indicators ---
         df = calc_rsi_ema(df)
+        if df is None or df.empty:
+            raise ValueError(f"Indicator calc failed for {symbol}")
+
         last = df.iloc[-1]
 
         cmp_ = float(last["Close"])
@@ -195,7 +207,7 @@ def analyze(symbol: str):
         high_52w = float(last["52W_High"])
         low_52w = float(last["52W_Low"])
 
-        # Determine signal
+        # --- Signal logic ---
         signal = "Neutral"
         if cmp_ > ema200 and rsi14 < 30:
             signal = "🔼 Oversold + Above EMA200"
@@ -213,10 +225,8 @@ def analyze(symbol: str):
         }
 
     except Exception as e:
-        st.error(f"analyze() error for {symbol}: {e}")
+        st.error(f"{symbol}: {e}")
         return None
-
-
 
 # -----------------------
 # Main UI
