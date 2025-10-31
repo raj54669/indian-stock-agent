@@ -280,6 +280,7 @@ def calc_rsi_ema(symbol: str, period_days="1y", max_retries=3):
         import traceback
         st.error(traceback.format_exc())
         return None
+        
 def analyze(symbol):
     """
     Use calc_rsi_ema to get the full DataFrame, then extract the latest indicators as a single dict.
@@ -359,13 +360,17 @@ def run_scan_once():
                 st.write(f"No data/result for {s}")
             time.sleep(0.25)
 
+    # --- Ensure combined summary table appears at the top after all processing ---
     if results:
         df_result = pd.DataFrame(results)
-        st.success("✅ Scan complete — latest results:")
-        st.dataframe(df_result[["Symbol", "CMP", "52W_Low", "52W_High", "EMA200", "RSI14", "Signal"]], use_container_width=True)
-        st.caption(f"Last scan completed at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        st.subheader("📊 Combined Summary Table")
+        st.dataframe(
+            df_result[["Symbol", "CMP", "52W_Low", "52W_High", "EMA200", "RSI14", "Signal"]],
+            use_container_width=True,
+            hide_index=True,
+        )
     else:
-        st.info("ℹ️ No valid results from scan")
+        st.warning("No stock data available to display.")
 
     if alerts:
         msg = "⚠️ Stock Alerts:\n" + "\n".join(alerts)
