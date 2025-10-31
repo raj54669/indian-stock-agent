@@ -120,6 +120,10 @@ if GITHUB_TOKEN and GITHUB_REPO:
 else:
     st.sidebar.warning("GitHub credentials missing (set GITHUB_TOKEN and GITHUB_REPO)")
 
+try:
+    st.sidebar.caption(f"📦 yfinance version: {yf.__version__}")
+except Exception:
+    pass
 
 # sanitize watchlist: ensure Symbol column exists
 if not watchlist_df.empty:
@@ -175,59 +179,49 @@ def _find_close_column(df: pd.DataFrame):
             return c
     return None
 
-def calc_rsi_ema(df: pd.DataFrame) -> Optional[pd.DataFrame]:
+def calc_rsi_ema(df: pd.DataFrame, ema_period: int = 200) -> Optional[pd.DataFrame]:
     """
-    Input: raw dataframe from yfinance (may be MultiIndex).
-    Output: df with EMA200, RSI14, 52W_High, 52W_Low (or None on failure).
+    Calculate RSI, EMA (user-defined period), and 52-week high/low.
     """
     try:
         if df is None or df.empty:
             return None
 
         df = _flatten_columns(df)
-
         close_col = _find_close_column(df)
         if close_col is None:
-            # can't find any close-like column
             return None
 
-        # Coerce to numeric and drop missing closes
         df["Close"] = pd.to_numeric(df[close_col], errors="coerce")
         df = df.dropna(subset=["Close"])
         if df.empty:
             return None
 
-        # Ensure datetime index
         df.index = pd.to_datetime(df.index)
 
-        # EMA200: use full available data, min_periods=1 so we always get a number
-        df["EMA200"] = df["Close"].ewm(span=200, adjust=False, min_periods=1).mean()
+        # --- Dynamic EMA ---
+        ema_col = f"EMA{ema_period}"
+        df[ema_col] = df["Close"].ewm(span=ema_period, adjust=False, min_periods=1).mean()
 
-        # RSI14 (Wilder smoothing via ewm alpha = 1/14)
+        # --- RSI14 ---
         delta = df["Close"].diff()
         gain = delta.where(delta > 0, 0.0)
         loss = -delta.where(delta < 0, 0.0)
-        avg_gain = gain.ewm(alpha=1/14, min_periods=14, adjust=False).mean()
-        avg_loss = loss.ewm(alpha=1/14, min_periods=14, adjust=False).mean()
+        avg_gain = gain.ewm(alpha=1 / 14, min_periods=14, adjust=False).mean()
+        avg_loss = loss.ewm(alpha=1 / 14, min_periods=14, adjust=False).mean()
         rs = avg_gain / avg_loss.replace(0, np.nan)
         df["RSI14"] = 100.0 - (100.0 / (1.0 + rs))
 
-        # 52-week high/low using exactly 365 calendar days from last available date
+        # --- 52-week range (365 days) ---
+        from datetime import timedelta
         last_date = df.index.max()
         cutoff = last_date - timedelta(days=365)
         df_1y = df[df.index >= cutoff]
-        if not df_1y.empty:
-            h52 = df_1y["Close"].max()
-            l52 = df_1y["Close"].min()
-        else:
-            # fallback to full available history if 1y slice empty
-            h52 = df["Close"].max()
-            l52 = df["Close"].min()
+        h52 = df_1y["Close"].max() if not df_1y.empty else df["Close"].max()
+        l52 = df_1y["Close"].min() if not df_1y.empty else df["Close"].min()
 
-        # broadcast scalar 52W values so last row can display them easily
         df["52W_High"] = h52
         df["52W_Low"] = l52
-
         return df
 
     except Exception:
@@ -300,7 +294,7 @@ initial_df = pd.DataFrame({
     "CMP": ["" for _ in symbols] if symbols else [],
     "52W_Low": ["" for _ in symbols] if symbols else [],
     "52W_High": ["" for _ in symbols] if symbols else [],
-    "EMA200": ["" for _ in symbols] if symbols else [],
+    f"EMA{ema_trigger}": ["" for _ in symbols] if symbols else [],
     "RSI14": ["" for _ in symbols] if symbols else [],
     "Signal": ["" for _ in symbols] if symbols else [],
 })
@@ -318,7 +312,13 @@ col1, col2 = st.columns([1, 2])
 with col1:
     run_now = st.button("Run Scan Now", key="run_now_btn")
 
-    interval = st.number_input("Interval (sec)", value=60, step=5, min_value=5, key="interval_input")
+    # --- Trigger settings ---
+    st.markdown("**Signal Conditions**")
+    ema_trigger = st.number_input("EMA Period", value=200, step=10, min_value=10, key="ema_trigger")
+    rsi_buy = st.number_input("RSI Buy Trigger (≤)", value=30, step=1, min_value=1, max_value=100, key="rsi_buy_trigger")
+    rsi_sell = st.number_input("RSI Sell Trigger (≥)", value=70, step=1, min_value=1, max_value=100, key="rsi_sell_trigger")
+
+    interval = st.number_input("Auto-scan Interval (sec)", value=60, step=5, min_value=5, key="interval_input")
 
     auto_col1, auto_col2 = st.columns([1, 3])
     with auto_col1:
@@ -326,15 +326,6 @@ with col1:
     with auto_col2:
         if auto:
             st.caption(f"🔁 Auto-scan active — every {interval} seconds")
-
-with col2:
-    st.markdown("**Status:**")
-    st.write(f"- GitHub Repo: `{GITHUB_REPO or 'N/A'}`")
-    st.write(f"- Token: {'✅' if GITHUB_TOKEN else '❌'}")
-    try:
-        st.caption(f"yfinance version: {yf.__version__}")
-    except Exception:
-        pass
 
 # -----------------------
 # Run Scan (with conditional debug output)
@@ -355,7 +346,7 @@ def run_scan():
                 errors_found = True
                 continue
 
-            df = calc_rsi_ema(df)
+            df = calc_rsi_ema(df, ema_period=ema_trigger)
             last = df.iloc[-1]
 
             cmp_ = float(last["Close"])
@@ -376,7 +367,7 @@ def run_scan():
                 "CMP": round(cmp_, 2),
                 "52W_Low": round(low_52w, 2),
                 "52W_High": round(high_52w, 2),
-                "EMA200": round(ema200, 2),
+                f"EMA{ema_trigger}": round(ema200, 2),
                 "RSI14": round(rsi14, 2),
                 "Signal": signal
             })
