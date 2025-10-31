@@ -134,99 +134,140 @@ def send_telegram(message: str):
         return False
 
 # -----------------------
-# RSI & EMA Calculation (robust for yfinance DataFrames)
+# Robust indicators calculator + analyzer (replace existing functions)
 # -----------------------
-def calc_rsi_ema(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.copy()
+from datetime import timedelta
 
-    # --- Ensure Close is a numeric Series ---
-    if isinstance(df["Close"], pd.DataFrame):
-        close = df["Close"].iloc[:, 0]
-    else:
-        close = df["Close"]
-    close = pd.to_numeric(close, errors="coerce")
-    df["Close"] = close
-    df = df.dropna(subset=["Close"])
-    if df.empty:
-        return df
-
-    # --- EMA200 ---
-    df["EMA200"] = close.ewm(span=min(200, len(close)), adjust=False).mean()
-
-    # --- RSI14 ---
-    delta = close.diff()
-    gain = delta.clip(lower=0)
-    loss = -delta.clip(upper=0)
-    avg_gain = gain.ewm(alpha=1 / 14, min_periods=14, adjust=False).mean()
-    avg_loss = loss.ewm(alpha=1 / 14, min_periods=14, adjust=False).mean()
-    rs = avg_gain / avg_loss.replace(0, np.nan)
-    df["RSI14"] = 100 - (100 / (1 + rs))
-
-    # --- 52W High/Low (exact 365 days from today) ---
-    cutoff_date = datetime.now() - pd.Timedelta(days=365)
-    df_1y = df[df.index >= cutoff_date]
-    if not df_1y.empty:
-        high_52w = df_1y["Close"].max()
-        low_52w = df_1y["Close"].min()
-    else:
-        high_52w = df["Close"].max()
-        low_52w = df["Close"].min()
-
-    df["52W_High"] = high_52w
-    df["52W_Low"] = low_52w
-
+def _flatten_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Flatten MultiIndex columns into single-level strings."""
+    if isinstance(df.columns, pd.MultiIndex):
+        df = df.copy()
+        df.columns = [
+            "_".join([str(x) for x in col if x is not None and str(x) != ""])
+            .strip("_")
+            for col in df.columns.values
+        ]
     return df
 
-# -----------------------
-# Analyzer (robust: handles multi-index and 365-day range)
-# -----------------------
-def analyze(symbol: str):
+def _find_close_column(df: pd.DataFrame):
+    """Find the best candidate for Close column (case-insensitive)."""
+    cols = [c for c in df.columns]
+    # Prefer exact 'Close' or 'Adj Close' endings; fallback to any column containing 'close'
+    for prefer in ("close", "adjclose", "adj_close", "adjusted_close"):
+        for c in cols:
+            if c.replace(" ", "").replace("_", "").lower() == prefer:
+                return c
+    for c in cols:
+        if "close" in c.lower():
+            return c
+    return None
+
+def calc_rsi_ema(df: pd.DataFrame) -> Optional[pd.DataFrame]:
+    """
+    Input: raw dataframe from yfinance (may be MultiIndex).
+    Output: df with EMA200, RSI14, 52W_High, 52W_Low (or None on failure).
+    """
     try:
-        # fetch full 2 years (for EMA200 stability)
+        if df is None or df.empty:
+            return None
+
+        df = _flatten_columns(df)
+
+        close_col = _find_close_column(df)
+        if close_col is None:
+            # can't find any close-like column
+            return None
+
+        # Coerce to numeric and drop missing closes
+        df["Close"] = pd.to_numeric(df[close_col], errors="coerce")
+        df = df.dropna(subset=["Close"])
+        if df.empty:
+            return None
+
+        # Ensure datetime index
+        df.index = pd.to_datetime(df.index)
+
+        # EMA200: use full available data, min_periods=1 so we always get a number
+        df["EMA200"] = df["Close"].ewm(span=200, adjust=False, min_periods=1).mean()
+
+        # RSI14 (Wilder smoothing via ewm alpha = 1/14)
+        delta = df["Close"].diff()
+        gain = delta.where(delta > 0, 0.0)
+        loss = -delta.where(delta < 0, 0.0)
+        avg_gain = gain.ewm(alpha=1/14, min_periods=14, adjust=False).mean()
+        avg_loss = loss.ewm(alpha=1/14, min_periods=14, adjust=False).mean()
+        rs = avg_gain / avg_loss.replace(0, np.nan)
+        df["RSI14"] = 100.0 - (100.0 / (1.0 + rs))
+
+        # 52-week high/low using exactly 365 calendar days from last available date
+        last_date = df.index.max()
+        cutoff = last_date - timedelta(days=365)
+        df_1y = df[df.index >= cutoff]
+        if not df_1y.empty:
+            h52 = df_1y["Close"].max()
+            l52 = df_1y["Close"].min()
+        else:
+            # fallback to full available history if 1y slice empty
+            h52 = df["Close"].max()
+            l52 = df["Close"].min()
+
+        # broadcast scalar 52W values so last row can display them easily
+        df["52W_High"] = h52
+        df["52W_Low"] = l52
+
+        return df
+
+    except Exception:
+        return None
+
+
+def analyze(symbol: str):
+    """
+    Download data and return a single-row dict with indicators.
+    Returns None on failure (caller should log/display debug).
+    """
+    try:
+        # fetch 2 years to stabilize EMA200
         df = yf.download(symbol, period="2y", interval="1d", progress=False, auto_adjust=True)
         if df is None or df.empty:
-            raise ValueError(f"No data for {symbol}")
+            return None
 
-        # --- Handle multi-index DataFrame ---
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = df.columns.get_level_values(-1)
+        df_ind = calc_rsi_ema(df)
+        if df_ind is None or df_ind.empty:
+            return None
 
-        if "Close" not in df.columns:
-            raise ValueError(f"Missing 'Close' in data for {symbol}")
+        last = df_ind.iloc[-1]
 
-        # --- Compute indicators ---
-        df = calc_rsi_ema(df)
-        if df is None or df.empty:
-            raise ValueError(f"Indicator calc failed for {symbol}")
+        # safe extraction (guard against NaN)
+        cmp_ = float(last["Close"]) if not pd.isna(last["Close"]) else None
+        ema200 = float(last["EMA200"]) if "EMA200" in last.index and not pd.isna(last["EMA200"]) else None
+        rsi14 = float(last["RSI14"]) if "RSI14" in last.index and not pd.isna(last["RSI14"]) else None
+        low52 = float(last["52W_Low"]) if "52W_Low" in last.index and not pd.isna(last["52W_Low"]) else None
+        high52 = float(last["52W_High"]) if "52W_High" in last.index and not pd.isna(last["52W_High"]) else None
 
-        last = df.iloc[-1]
+        if cmp_ is None:
+            return None
 
-        cmp_ = float(last["Close"])
-        ema200 = float(last["EMA200"])
-        rsi14 = float(last["RSI14"])
-        high_52w = float(last["52W_High"])
-        low_52w = float(last["52W_Low"])
-
-        # --- Signal logic ---
         signal = "Neutral"
-        if cmp_ > ema200 and rsi14 < 30:
-            signal = "🔼 Oversold + Above EMA200"
-        elif cmp_ < ema200 and rsi14 > 70:
-            signal = "🔻 Overbought + Below EMA200"
+        if ema200 is not None and rsi14 is not None:
+            if cmp_ > ema200 and rsi14 < 30:
+                signal = "BUY"
+            elif cmp_ < ema200 and rsi14 > 70:
+                signal = "SELL"
 
         return {
             "Symbol": symbol,
             "CMP": round(cmp_, 2),
-            "52W_Low": round(low_52w, 2),
-            "52W_High": round(high_52w, 2),
-            "EMA200": round(ema200, 2),
-            "RSI14": round(rsi14, 2),
+            "52W_Low": round(low52, 2) if low52 is not None else None,
+            "52W_High": round(high52, 2) if high52 is not None else None,
+            "EMA200": round(ema200, 2) if ema200 is not None else None,
+            "RSI14": round(rsi14, 2) if rsi14 is not None else None,
             "Signal": signal
         }
 
-    except Exception as e:
-        st.error(f"{symbol}: {e}")
+    except Exception:
         return None
+
 
 # -----------------------
 # Main UI
