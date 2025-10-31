@@ -384,16 +384,16 @@ def run_scan():
 if run_now:
     run_scan()
 
-# Optional auto-refresh
-try:
-    from streamlit_autorefresh import st_autorefresh
-    if auto:
-        # trigger rerun using autorefresh; the app will rerun and re-evaluate run_now/auto
-        st_autorefresh(interval=int(interval) * 1000, key="autorefresh")
+# -----------------------
+# Auto-scan via streamlit-autorefresh
+# -----------------------
+if auto:
+    if st_autorefresh:
+        refresh_interval_ms = int(interval) * 1000
+        st_autorefresh(interval=refresh_interval_ms, key="auto_refresh")
         st.info(f"🔁 Auto-scan active — every {interval} seconds")
-        # run on this render too
         run_scan()
-except Exception:
-    st.info("Optional: pip install streamlit-autorefresh for background scans")
+    else:
+        st.warning("⚠️ Auto-refresh package missing. Run: pip install streamlit-autorefresh")
 
 # end of file
