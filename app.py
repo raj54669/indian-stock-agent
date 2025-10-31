@@ -18,6 +18,8 @@ except ImportError:
 # -----------------------
 st.set_page_config(page_title="📈 Indian Stock Agent – EMA + RSI Alert Bot", layout="wide")
 
+st.markdown("<style>div.block-container {padding-top: 1rem;}</style>", unsafe_allow_html=True)
+
 # -----------------------
 # Secrets helpers
 # -----------------------
@@ -310,7 +312,12 @@ col1, col2 = st.columns([1, 2])
 
 with col1:
     run_now = st.button("Run Scan Now", key="run_now_btn")
-    auto = st.checkbox("Enable Auto-scan", key="auto_chk")
+    auto_col1, auto_col2 = st.columns([1, 3])
+    with auto_col1:
+        auto = st.checkbox("Enable Auto-scan", key="auto_chk")
+    with auto_col2:
+        if auto:
+            st.caption(f"🔁 Auto-scan active — every {interval} seconds")
     interval = st.number_input("Interval (sec)", value=60, step=5, min_value=5, key="interval_input")
 
 with col2:
@@ -390,6 +397,14 @@ def run_scan():
 if run_now:
     run_scan()
 
+test_telegram = st.button("📨 Send Test Telegram Alert")
+if test_telegram:
+    success = send_telegram("✅ Test alert from Indian Stock Agent Bot!")
+    if success:
+        st.success("✅ Telegram test alert sent successfully!")
+    else:
+        st.error("❌ Telegram send failed. Check your token or chat_id.")
+
 # -----------------------
 # Auto-scan via streamlit-autorefresh
 # -----------------------
@@ -397,7 +412,6 @@ if auto:
     if st_autorefresh:
         refresh_interval_ms = int(interval) * 1000
         st_autorefresh(interval=refresh_interval_ms, key="auto_refresh")
-        st.info(f"🔁 Auto-scan active — every {interval} seconds")
         run_scan()
     else:
         st.warning("⚠️ Auto-refresh package missing. Run: pip install streamlit-autorefresh")
