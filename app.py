@@ -191,95 +191,88 @@ def send_telegram(message: str):
 # -----------------------
 # Stock Analysis
 # -----------------------
-def calc_rsi_ema(symbol: str, period_days="1y", max_retries=3):
+def calc_rsi_ema(symbol: str):
     """
-    Robust fetch + compute:
-     - Try multiple fetching strategies (Ticker.history, download)
-     - Retry a few times with short backoff
-     - Compute EMA200 and RSI14 (Wilder) on daily data
-     - Return a DataFrame (full history) or None
+    Fetches 1-day interval historical data, computes EMA200 and RSI14,
+    and returns a dataframe plus the last computed row (latest indicators).
     """
+
+    import pandas as pd
     import numpy as np
-    import time
+    import yfinance as yf
+    from datetime import datetime, timedelta
+
     try:
-        last_exc = None
-        for attempt in range(1, max_retries + 1):
-            try:
-                # Strategy A: Ticker.history (often more reliable in some environments)
-                t = yf.Ticker(symbol)
-                df = t.history(period=period_days, interval="1d", auto_adjust=True)
-                if isinstance(df.columns, pd.MultiIndex):
-                    df.columns = [c[1] if isinstance(c, tuple) else c for c in df.columns]
+        # --- Fetch last 400 trading days for context ---
+        end_date = datetime.now()
+        start_date = end_date - timedelta(days=400)
 
-                # Quick validation
-                if df is not None and not df.empty and "Close" in df.columns:
-                    st.write(f"fetch ok (strategy A) for {symbol}: rows={len(df)} cols={list(df.columns)}")
-                    break
+        data = yf.download(symbol, start=start_date, end=end_date, interval="1d", progress=False)
 
-                # Strategy B: download with explicit args
-                df = yf.download(symbol, period=period_days, interval="1d", progress=False, auto_adjust=True, threads=False)
-                if isinstance(df.columns, pd.MultiIndex):
-                    df.columns = [c[1] if isinstance(c, tuple) else c for c in df.columns]
-
-                if df is not None and not df.empty and "Close" in df.columns:
-                    st.write(f"fetch ok (strategy B) for {symbol}: rows={len(df)} cols={list(df.columns)}")
-                    break
-
-                # Strategy C: try longer period (2y) or 'max' if 1y returned nothing
-                df = yf.download(symbol, period="2y", interval="1d", progress=False, auto_adjust=True, threads=False)
-                if isinstance(df.columns, pd.MultiIndex):
-                    df.columns = [c[1] if isinstance(c, tuple) else c for c in df.columns]
-
-                if df is not None and not df.empty and "Close" in df.columns:
-                    st.write(f"fetch ok (strategy C) for {symbol}: rows={len(df)} cols={list(df.columns)}")
-                    break
-
-                # Nothing worked this attempt
-                last_exc = f"attempt {attempt}: no valid Close"
-                st.write(f"attempt {attempt} for {symbol} returned no valid data")
-            except Exception as e:
-                last_exc = e
-                st.write(f"attempt {attempt} fetch error for {symbol}: {e}")
-            # short backoff
-            time.sleep(0.5)
-
-        # Final check
-        if df is None or df.empty or "Close" not in df.columns:
-            st.error(f"No data for {symbol} after {max_retries} attempts. Last error: {last_exc}")
+        if data is None or data.empty:
+            st.error(f"No valid data returned for {symbol}")
             return None
 
-        # compute indicators (safe on small series)
-        df = df.dropna(subset=["Close"]).copy()
-        # EMA200 computed even if <200 rows (span=min)
-        df["EMA200"] = df["Close"].ewm(span=min(200, len(df)), adjust=False).mean()
+        # --- Compute EMA200 ---
+        data["EMA200"] = data["Close"].ewm(span=200, adjust=False).mean()
 
-        # RSI14 - Wilder smoothing
-        delta = df["Close"].diff()
-        gain = delta.where(delta > 0, 0.0)
-        loss = -delta.where(delta < 0, 0.0)
-        avg_gain = gain.ewm(alpha=1/14, min_periods=1, adjust=False).mean()
-        avg_loss = loss.ewm(alpha=1/14, min_periods=1, adjust=False).mean()
-        rs = avg_gain / avg_loss.replace(0, np.nan)
-        df["RSI14"] = 100 - (100 / (1 + rs))
+        # --- Compute RSI14 ---
+        delta = data["Close"].diff()
+        gain = np.where(delta > 0, delta, 0)
+        loss = np.where(delta < 0, -delta, 0)
 
-        # 52-week high/low
-        df["52W_High"] = df["Close"].rolling(window=252, min_periods=1).max()
-        df["52W_Low"]  = df["Close"].rolling(window=252, min_periods=1).min()
+        roll_up = pd.Series(gain).rolling(window=14).mean()
+        roll_down = pd.Series(loss).rolling(window=14).mean()
 
-        # Debug: show last 1-3 computed rows
-        try:
-            st.write(f"Computed indicators for {symbol} - last rows:")
-            st.write(df.tail(3)[["Close", "EMA200", "RSI14"]])
-        except Exception:
-            pass
+        RS = roll_up / roll_down
+        RSI = 100.0 - (100.0 / (1.0 + RS))
+        data["RSI14"] = RSI.values
 
-        return df
+        # --- Compute 52-week high and low ---
+        data["52W_High"] = data["High"].rolling(window=252, min_periods=1).max()
+        data["52W_Low"] = data["Low"].rolling(window=252, min_periods=1).min()
+
+        # --- Get latest row safely ---
+        last_row = data.iloc[-1].copy()
+        cmp_price = float(last_row["Close"])
+        ema200 = float(last_row["EMA200"])
+        rsi14 = float(last_row["RSI14"]) if not np.isnan(last_row["RSI14"]) else None
+        high_52w = float(last_row["52W_High"])
+        low_52w = float(last_row["52W_Low"])
+
+        # --- Determine Signal ---
+        if rsi14 is None:
+            signal = "Neutral"
+        elif rsi14 < 30 and cmp_price > ema200:
+            signal = "BUY"
+        elif rsi14 > 70 and cmp_price < ema200:
+            signal = "SELL"
+        else:
+            signal = "Neutral"
+
+        # --- Build summary result ---
+        result = {
+            "Symbol": symbol,
+            "CMP": round(cmp_price, 2),
+            "52W_High": round(high_52w, 2),
+            "52W_Low": round(low_52w, 2),
+            "EMA200": round(ema200, 2),
+            "RSI14": round(rsi14, 2) if rsi14 else None,
+            "Signal": signal,
+        }
+
+        # --- Optional: Debug mini preview ---
+        with st.expander(f"🔍 Debug {symbol}", expanded=False):
+            st.write(data.tail(3)[["Close", "EMA200", "RSI14"]])
+
+        return result
 
     except Exception as e:
-        st.error(f"Fetch/Calc exception for {symbol}: {e}")
+        st.error(f"Error in calc_rsi_ema for {symbol}: {e}")
         import traceback
-        st.error(traceback.format_exc())
+        st.text(traceback.format_exc())
         return None
+
         
 def analyze(symbol):
     """
@@ -321,15 +314,20 @@ def analyze(symbol):
         import traceback
         st.error(traceback.format_exc())
         return None
-# -----------------------
-# Controls (unique keys)
-# -----------------------
+
+# =============================
+# ⚙️ Controls and Unified Scanning
+# =============================
+
 st.subheader("⚙️ Controls")
 col1, col2 = st.columns([1, 2])
+
 with col1:
+    # Explicit keys prevent StreamlitDuplicateElementId
     run_now = st.button("Run Scan Now", key="run_now_btn")
     auto = st.checkbox("Enable Auto-scan (local only)", key="auto_chk")
     interval = st.number_input("Interval (sec)", value=60, step=5, min_value=5, key="interval_input")
+
 with col2:
     st.write("Status:")
     st.write(f"- GitHub Repo: {GITHUB_REPO or 'N/A'}")
@@ -339,61 +337,83 @@ with col2:
     except Exception:
         pass
 
-# Unified scan routine
+
+# =============================
+# 🧠 Main Scan Function
+# =============================
 def run_scan_once():
+    """Fetch, analyze all stocks, and display unified table first."""
     if watchlist_df is None or "Symbol" not in watchlist_df.columns:
         st.error("No watchlist available")
         return [], []
 
     symbols = watchlist_df["Symbol"].dropna().astype(str).tolist()
     results, alerts = [], []
+    debug_info = []  # store debug notes instead of printing directly
 
     with st.spinner(f"Scanning {len(symbols)} symbols..."):
         for s in symbols:
-            st.write(f"Processing {s} …")
-            r = analyze(s)
-            if r:
-                results.append(r)
-                if r["Signal"] in ("BUY", "SELL"):
-                    alerts.append(f"{s}: {r['Signal']} (CMP={r['CMP']}, EMA200={r['EMA200']}, RSI={r['RSI14']})")
-            else:
-                st.write(f"No data/result for {s}")
+            try:
+                debug_info.append(f"Processing {s} ...")
+                r = analyze(s)
+                if r:
+                    results.append(r)
+                    debug_info.append(f"✔️ Completed {s}: RSI={r['RSI14']} EMA200={r['EMA200']} CMP={r['CMP']}")
+                    if r["Signal"] in ("BUY", "SELL"):
+                        alerts.append(
+                            f"{s}: {r['Signal']} (CMP={r['CMP']}, EMA200={r['EMA200']}, RSI={r['RSI14']})"
+                        )
+                else:
+                    debug_info.append(f"⚠️ No result for {s}")
+            except Exception as e:
+                debug_info.append(f"❌ Error for {s}: {e}")
             time.sleep(0.25)
 
-    # --- Ensure combined summary table appears at the top after all processing ---
+    # --- Unified summary table at top ---
+    st.markdown("---")
+    st.subheader("📊 Combined Summary Table")
+
     if results:
         df_result = pd.DataFrame(results)
-        st.subheader("📊 Combined Summary Table")
         st.dataframe(
             df_result[["Symbol", "CMP", "52W_Low", "52W_High", "EMA200", "RSI14", "Signal"]],
             use_container_width=True,
             hide_index=True,
         )
+        st.caption(f"Last scan completed at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     else:
-        st.warning("No stock data available to display.")
+        st.warning("⚠️ No valid results from scan")
 
+    # --- Alerts (Telegram + UI) ---
     if alerts:
         msg = "⚠️ Stock Alerts:\n" + "\n".join(alerts)
         st.warning(msg)
-        # send Telegram but only if configured
-        if TELEGRAM_TOKEN and CHAT_ID:
-            send_telegram(msg)
+        try:
+            if TELEGRAM_TOKEN and CHAT_ID:
+                send_telegram(msg)
+        except Exception as e:
+            st.error(f"Telegram send failed: {e}")
+
+    # --- Collapsible debug info (no clutter) ---
+    if debug_info:
+        with st.expander("🔍 Debug details (click to expand)"):
+            for line in debug_info:
+                st.text(line)
 
     return results, alerts
 
 
-# Run on demand
+# =============================
+# 🚀 Run / Auto-refresh Logic
+# =============================
 if run_now:
     run_scan_once()
 
-# Non-blocking auto-refresh
 try:
     from streamlit_autorefresh import st_autorefresh
     if auto:
-        # triggers rerun every interval seconds
         st_autorefresh(interval=int(interval) * 1000, key="autorefresh")
-        # ensure scan runs on each rerun
+        st.info(f"🔁 Auto-scan active — every {interval} seconds")
         run_scan_once()
 except Exception:
-    st.info("Optional: install streamlit-autorefresh (pip install streamlit-autorefresh) for background scans")
-
+    st.info("Optional: install streamlit-autorefresh for background scans: pip install streamlit-autorefresh")
