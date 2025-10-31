@@ -139,34 +139,68 @@ def calc_rsi_ema(df):
     return df
 
 # -----------------------
-# Analyzer
+# Analyzer (replace existing analyze() function)
 # -----------------------
-def analyze(symbol: str):
-    df = calc_rsi_ema(symbol)
-    if df is None or df.empty:
+def analyze(symbol: str, period="1y"):
+    """
+    Fetch data for `symbol`, compute indicators using calc_rsi_ema(df),
+    and return a single-row dict that matches the combined table columns,
+    or None if data is not available.
+    """
+    try:
+        # fetch raw OHLC daily data
+        df = yf.download(symbol, period=period, interval="1d", progress=False, auto_adjust=True)
+        if df is None or df.empty:
+            return None
+
+        # compute indicators (calc_rsi_ema expects a DataFrame)
+        df = calc_rsi_ema(df)
+
+        # ensure we have enough rows
+        if df is None or df.empty:
+            return None
+
+        last = df.iloc[-1]
+
+        # safe extraction with fallbacks
+        cmp_ = float(last["Close"]) if "Close" in last.index and not pd.isna(last["Close"]) else None
+        ema200 = float(last["EMA200"]) if "EMA200" in last.index and not pd.isna(last["EMA200"]) else None
+        rsi14 = float(last["RSI14"]) if "RSI14" in last.index and not pd.isna(last["RSI14"]) else None
+
+        # 52-week high / low (last value from rolling columns or recompute)
+        # prefer computed columns if present, otherwise compute from Close
+        if "52W_High" in df.columns and not pd.isna(df["52W_High"].iloc[-1]):
+            high52 = float(df["52W_High"].iloc[-1])
+            low52 = float(df["52W_Low"].iloc[-1])
+        else:
+            close = df["Close"]
+            high52 = float(close.rolling(252, min_periods=1).max().iloc[-1])
+            low52 = float(close.rolling(252, min_periods=1).min().iloc[-1])
+
+        # signal logic
+        signal = "Neutral"
+        if ema200 is not None and rsi14 is not None and cmp_ is not None:
+            if cmp_ > ema200 and rsi14 < 30:
+                signal = "BUY"
+            elif cmp_ < ema200 and rsi14 > 70:
+                signal = "SELL"
+
+        return {
+            "Symbol": symbol,
+            "CMP": round(cmp_, 2) if cmp_ is not None else None,
+            "52W_Low": round(low52, 2) if low52 is not None else None,
+            "52W_High": round(high52, 2) if high52 is not None else None,
+            "EMA200": round(ema200, 2) if ema200 is not None else None,
+            "RSI14": round(rsi14, 2) if rsi14 is not None else None,
+            "Signal": signal
+        }
+
+    except Exception as e:
+        st.error(f"analyze() error for {symbol}: {e}")
+        import traceback
+        st.text(traceback.format_exc())
         return None
-    last = df.iloc[-1]
-    cmp_ = float(last["Close"])
-    ema = float(last["EMA200"])
-    rsi = float(last["RSI14"])
-    low = float(last["52W_Low"])
-    high = float(last["52W_High"])
 
-    signal = "Neutral"
-    if cmp_ > ema and rsi < 30:
-        signal = "BUY"
-    elif cmp_ < ema and rsi > 70:
-        signal = "SELL"
-
-    return {
-        "Symbol": symbol,
-        "CMP": round(cmp_, 2),
-        "52W_Low": round(low, 2),
-        "52W_High": round(high, 2),
-        "EMA200": round(ema, 2),
-        "RSI14": round(rsi, 2),
-        "Signal": signal
-    }
 
 # -----------------------
 # Main UI
