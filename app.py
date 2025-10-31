@@ -134,24 +134,19 @@ def send_telegram(message: str):
         return False
 
 # -----------------------
-# Indicator calc (expects DataFrame)
-# -----------------------
-# -----------------------
-# RSI & EMA Calculation (fixed)
-# -----------------------
-# -----------------------
-# RSI & EMA Calculation (365-day window)
-# -----------------------
-# -----------------------
-# RSI & EMA Calculation (exact trailing 365 days)
+# RSI & EMA Calculation (robust for yfinance DataFrames)
 # -----------------------
 def calc_rsi_ema(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
 
-    # Ensure valid numeric Close
-    close = pd.to_numeric(df["Close"], errors="coerce")
-    df = df.loc[close.dropna().index]
-
+    # --- Ensure Close is a numeric Series ---
+    if isinstance(df["Close"], pd.DataFrame):
+        close = df["Close"].iloc[:, 0]
+    else:
+        close = df["Close"]
+    close = pd.to_numeric(close, errors="coerce")
+    df["Close"] = close
+    df = df.dropna(subset=["Close"])
     if df.empty:
         return df
 
@@ -162,32 +157,25 @@ def calc_rsi_ema(df: pd.DataFrame) -> pd.DataFrame:
     delta = close.diff()
     gain = delta.clip(lower=0)
     loss = -delta.clip(upper=0)
-
-    avg_gain = gain.ewm(alpha=1/14, min_periods=14, adjust=False).mean()
-    avg_loss = loss.ewm(alpha=1/14, min_periods=14, adjust=False).mean()
-
+    avg_gain = gain.ewm(alpha=1 / 14, min_periods=14, adjust=False).mean()
+    avg_loss = loss.ewm(alpha=1 / 14, min_periods=14, adjust=False).mean()
     rs = avg_gain / avg_loss.replace(0, np.nan)
     df["RSI14"] = 100 - (100 / (1 + rs))
 
-    # --- 52-week High/Low based on actual 365-day window ---
+    # --- 52W High/Low (exact 365 days from today) ---
     cutoff_date = datetime.now() - pd.Timedelta(days=365)
     df_1y = df[df.index >= cutoff_date]
-
     if not df_1y.empty:
         high_52w = df_1y["Close"].max()
         low_52w = df_1y["Close"].min()
     else:
-        # fallback to full data if less than 1y available
         high_52w = df["Close"].max()
         low_52w = df["Close"].min()
 
-    # assign same values to all rows so last row can access
     df["52W_High"] = high_52w
     df["52W_Low"] = low_52w
 
     return df
-
-
 
 # -----------------------
 # Analyzer (fixed)
