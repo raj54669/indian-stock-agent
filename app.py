@@ -137,36 +137,18 @@ def send_telegram(msg):
 # -----------------------
 # RSI & EMA
 # -----------------------
-def calc_rsi_ema(symbol: str, period="2y"):
-    try:
-        df = yf.download(symbol, period=period, interval="1d", progress=False, auto_adjust=True)
-        if df is None or df.empty:
-            return None
+def calc_rsi_ema(df):
+    df = df.copy()
+    df["EMA200"] = df["Close"].ewm(span=200, adjust=False).mean()
 
-        # ensure 1-D Close
-        close = df["Close"]
-        if isinstance(close, pd.DataFrame):
-            close = close.iloc[:, 0]
-        close = pd.Series(close, name="Close").astype(float)
-
-        df["EMA200"] = close.ewm(span=min(200, len(close)), adjust=False).mean()
-
-        delta = close.diff()
-        gain = delta.clip(lower=0)
-        loss = -delta.clip(upper=0)
-
-        avg_gain = gain.ewm(alpha=1/14, adjust=False, min_periods=14).mean()
-        avg_loss = loss.ewm(alpha=1/14, adjust=False, min_periods=14).mean()
-        rs = avg_gain / avg_loss.replace(0, np.nan)
-        df["RSI14"] = 100 - (100 / (1 + rs))
-
-        df["52W_High"] = close.rolling(252, min_periods=1).max()
-        df["52W_Low"] = close.rolling(252, min_periods=1).min()
-
-        return df
-    except Exception as e:
-        st.error(f"{symbol}: {e}")
-        return None
+    delta = df["Close"].diff()
+    gain = np.where(delta > 0, delta, 0)
+    loss = np.where(delta < 0, -delta, 0)
+    roll_up = pd.Series(gain.flatten()).rolling(window=14).mean()
+    roll_down = pd.Series(loss.flatten()).rolling(window=14).mean()
+    rs = roll_up / roll_down
+    df["RSI14"] = 100.0 - (100.0 / (1.0 + rs))
+    return df
 
 # -----------------------
 # Analyzer
@@ -204,19 +186,35 @@ def analyze(symbol: str):
 st.title("📊 Indian Stock Agent – EMA + RSI Alert Bot")
 
 if watchlist_df.empty or "Symbol" not in watchlist_df.columns:
-    st.warning("⚠️ No valid 'Symbol' column found")
+    st.warning("⚠️ No valid 'Symbol' column found in your watchlist Excel file.")
 else:
     symbols = watchlist_df["Symbol"].dropna().astype(str).tolist()
 
+    # Static placeholder table shown at top
+    st.subheader("📋 Combined Summary Table")
+    initial_df = pd.DataFrame({
+        "Symbol": symbols,
+        "CMP": ["" for _ in symbols],
+        "52W_Low": ["" for _ in symbols],
+        "52W_High": ["" for _ in symbols],
+        "EMA200": ["" for _ in symbols],
+        "RSI14": ["" for _ in symbols],
+        "Signal": ["" for _ in symbols],
+    })
+    summary_placeholder = st.empty()
+    summary_placeholder.dataframe(initial_df, use_container_width=True, hide_index=True)
+    last_scan_time = st.caption("Will auto-update after scanning.")
+
+    # Controls section
     st.subheader("⚙️ Controls")
-    
+
     col1, col2 = st.columns([1, 2])
-    
+
     with col1:
         run_now = st.button("Run Scan Now", key="run_now_btn")
         auto = st.checkbox("Enable Auto-scan (local only)", key="auto_chk")
         interval = st.number_input("Interval (sec)", value=60, step=5, min_value=5, key="interval_input")
-    
+
     with col2:
         st.markdown("**Status:**")
         st.write(f"- GitHub Repo: `{GITHUB_REPO or 'N/A'}`")
@@ -227,28 +225,63 @@ else:
             pass
 
 
-    # Run scan
-    def run_scan():
-        results, alerts = [], []
-        for s in symbols:
-            r = analyze(s)
-            if r:
-                results.append(r)
-        if results:
-            df = pd.DataFrame(results)
-            summary_placeholder.dataframe(df, use_container_width=True, hide_index=True)
-            last_scan_time.caption(f"Last scan: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-        else:
-            summary_placeholder.warning("No data fetched")
+# Run Scan
+def run_scan():
+    results = []
+    for symbol in symbols:
+        try:
+            df = yf.download(symbol, period="1y", interval="1d", progress=False, auto_adjust=True)
+            if df is None or df.empty:
+                st.warning(f"⚠️ No data for {symbol}")
+                continue
 
-    if run_now:
+            df = calc_rsi_ema(df)
+
+            cmp = df["Close"].iloc[-1]
+            ema200 = df["EMA200"].iloc[-1]
+            rsi14 = df["RSI14"].iloc[-1]
+            high_52w = df["Close"].rolling(252, min_periods=1).max().iloc[-1]
+            low_52w = df["Close"].rolling(252, min_periods=1).min().iloc[-1]
+
+            if cmp > ema200 and rsi14 < 30:
+                signal = "🔼 Oversold + Above EMA200"
+            elif cmp < ema200 and rsi14 > 70:
+                signal = "🔻 Overbought + Below EMA200"
+            else:
+                signal = "Neutral"
+
+            results.append({
+                "Symbol": symbol,
+                "CMP": round(cmp, 2),
+                "52W_Low": round(low_52w, 2),
+                "52W_High": round(high_52w, 2),
+                "EMA200": round(ema200, 2),
+                "RSI14": round(rsi14, 2),
+                "Signal": signal
+            })
+
+        except Exception as e:
+            st.error(f"{symbol}: {e}")
+
+    # Update the main combined summary table
+    if results:
+        df = pd.DataFrame(results)
+        summary_placeholder.dataframe(df, use_container_width=True, hide_index=True)
+        last_scan_time.caption(f"Last scan: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    else:
+        summary_placeholder.warning("No valid data fetched.")
+
+
+# Run button
+if run_now:
+    run_scan()
+
+# Optional auto-refresh for background scans
+try:
+    from streamlit_autorefresh import st_autorefresh
+    if auto:
+        st_autorefresh(interval=int(interval) * 1000, key="autorefresh")
+        st.info(f"🔁 Auto-scan active — every {interval} seconds")
         run_scan()
-
-    try:
-        from streamlit_autorefresh import st_autorefresh
-        if auto:
-            st_autorefresh(interval=int(interval)*1000, key="autorefresh")
-            st.info(f"🔁 Auto-scan active — every {interval} seconds")
-            run_scan()
-    except Exception:
-        st.info("Optional: pip install streamlit-autorefresh for background scans")
+except Exception:
+    st.info("Optional: pip install streamlit-autorefresh for background scans")
