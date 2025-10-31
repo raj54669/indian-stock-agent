@@ -1,4 +1,6 @@
-# app.py – Indian Stock Agent (100% REST-based GitHub connection, Nextbite-style)
+# ==========================================================
+# app.py — Indian Stock Agent (Final Stable Build)
+# ==========================================================
 
 import streamlit as st
 import pandas as pd
@@ -29,7 +31,6 @@ GITHUB_REPO = get_secret("GITHUB_REPO")
 GITHUB_BRANCH = get_secret("GITHUB_BRANCH", "main")
 GITHUB_FILE_PATH = get_secret("GITHUB_FILE_PATH", "watchlist.xlsx")
 
-# Telegram settings
 def get_secret_section(key: str, section: Optional[str] = None, default=None):
     try:
         if section and section in st.secrets and key in st.secrets[section]:
@@ -62,29 +63,24 @@ def github_raw_headers():
     }
 
 # -----------------------
-# Sidebar – Simplified
+# Sidebar
 # -----------------------
-
 st.sidebar.header("📂 Watchlist Management")
 uploaded_file = st.sidebar.file_uploader("Upload new watchlist (Excel)", type=["xlsx"])
 
 st.sidebar.header("Settings")
-
-# Telegram connection indicator
 if TELEGRAM_TOKEN and CHAT_ID:
     st.sidebar.success("✅ Telegram configured")
 else:
     st.sidebar.warning("⚠️ Telegram not set – alerts disabled")
 
-# GitHub connection indicator
 if GITHUB_TOKEN and GITHUB_REPO:
     st.sidebar.success("✅ GitHub secrets present")
 else:
     st.sidebar.error("GitHub credentials missing")
 
-
 # -----------------------
-# Load Excel file from GitHub (REST)
+# GitHub Excel Loaders
 # -----------------------
 @st.cache_data(ttl=120)
 def load_excel_from_github():
@@ -102,10 +98,11 @@ def load_excel_from_github():
     return pd.DataFrame()
 
 # -----------------------
-# Save Excel to GitHub (REST)
+# Save Excel to GitHub
 # -----------------------
 def save_excel_to_github(df, message="Update watchlist"):
     try:
+        import base64
         owner, repo = GITHUB_REPO.split("/", 1)
         get_url = f"https://api.github.com/repos/{owner}/{repo}/contents/{GITHUB_FILE_PATH}"
         get_resp = requests.get(get_url, headers=github_headers(), timeout=10)
@@ -115,14 +112,9 @@ def save_excel_to_github(df, message="Update watchlist"):
 
         bytes_buf = io.BytesIO()
         df.to_excel(bytes_buf, index=False)
-        encoded_content = bytes_buf.getvalue()
+        encoded_content = base64.b64encode(bytes_buf.getvalue()).decode("utf-8")
 
-        import base64
-        data = {
-            "message": message,
-            "branch": GITHUB_BRANCH,
-            "content": base64.b64encode(encoded_content).decode("utf-8"),
-        }
+        data = {"message": message, "branch": GITHUB_BRANCH, "content": encoded_content}
         if sha:
             data["sha"] = sha
 
@@ -135,12 +127,9 @@ def save_excel_to_github(df, message="Update watchlist"):
         st.error(f"Error saving to GitHub: {e}")
 
 # -----------------------
-# Load Watchlist (with upload override)
+# Load Watchlist
 # -----------------------
-
-# Upload file option to override GitHub watchlist
 use_uploaded = False
-
 if uploaded_file is not None:
     try:
         uploaded_watchlist = pd.read_excel(uploaded_file)
@@ -158,13 +147,12 @@ if not use_uploaded:
     st.sidebar.info("Using GitHub watchlist as default source")
 
 # -----------------------
-# UI
+# UI Header
 # -----------------------
 st.title("📊 Indian Stock Agent – EMA + RSI Alert Bot")
 
 if watchlist_df.empty or "Symbol" not in [c.strip() for c in watchlist_df.columns]:
-    st.warning(f"⚠️ No valid 'Symbol' column found in `{GITHUB_FILE_PATH}`.")
-    st.markdown("Upload an Excel file to GitHub with a column named **Symbol**.")
+    st.warning("⚠️ No valid 'Symbol' column found in watchlist.")
     st.table(pd.DataFrame({"Symbol": ["RELIANCE.NS", "TCS.NS"]}))
 else:
     st.success(f"✅ Loaded {len(watchlist_df)} symbols from GitHub")
@@ -188,96 +176,72 @@ def send_telegram(message: str):
         st.error(f"Telegram error: {e}")
         return False
 
-# -----------------------
-# Stock Analysis
-# -----------------------
+# ==========================================================
+# 🔍 Stock Indicators
+# ==========================================================
 def calc_rsi_ema(symbol: str, period="2y"):
-    """
-    Fetch daily historical data for `symbol` and compute EMA200 and RSI14.
-    Returns a pandas DataFrame (with EMA200, RSI14, 52W_High, 52W_Low).
-    Returns None on failure.
-    """
+    """Fetch daily stock data and compute EMA200, RSI14, and 52W High/Low"""
     import numpy as np
     try:
-        # fetch daily data; use 2y to ensure >= 200 trading days where possible
         df = yf.download(symbol, period=period, interval="1d", progress=False, auto_adjust=True)
-
-        if df is None or df.empty:
-            # no data returned
+        if df is None or df.empty or "Close" not in df.columns:
             return None
 
-        # make sure we have columns we expect and use Series (1-D)
-        if "Close" not in df.columns:
-            return None
-
-        # ensure Close is a 1-D Series (this avoids the 2-D error)
         close = df["Close"].astype(float)
 
-        # compute EMA200 (safe when len < 200)
+        # EMA200
         df["EMA200"] = close.ewm(span=min(200, len(close)), adjust=False).mean()
 
-        # compute RSI14 using Wilder's smoothing (alpha = 1/14)
+        # RSI14
         delta = close.diff()
         gain = delta.clip(lower=0)
         loss = (-delta).clip(lower=0)
-
-        # Wilder smoothing (use ewm with alpha=1/14)
         avg_gain = gain.ewm(alpha=1/14, adjust=False, min_periods=14).mean()
         avg_loss = loss.ewm(alpha=1/14, adjust=False, min_periods=14).mean()
-
         rs = avg_gain / avg_loss.replace(0, np.nan)
         df["RSI14"] = 100.0 - (100.0 / (1.0 + rs))
 
-        # 52-week high/low (approx 252 trading days)
+        # 52-week High/Low
         df["52W_High"] = close.rolling(window=252, min_periods=1).max()
         df["52W_Low"] = close.rolling(window=252, min_periods=1).min()
 
-        # return full df (with indicators)
         return df
-
     except Exception as e:
-        # show minimal info in UI logs and return None
         st.error(f"Error in calc_rsi_ema for {symbol}: {e}")
         import traceback
         st.text(traceback.format_exc())
         return None
 
+# ==========================================================
+# 📈 Analyze One Symbol
+# ==========================================================
 def analyze(symbol: str):
-    """
-    Calls calc_rsi_ema and returns a single-row dict:
-    {'Symbol','CMP','52W_Low','52W_High','EMA200','RSI14','Signal'}
-    or None if data unavailable.
-    """
     try:
         df = calc_rsi_ema(symbol)
         if df is None or df.empty:
             return None
 
         last = df.iloc[-1]
+        cmp_ = float(last["Close"])
+        ema200 = float(last["EMA200"])
+        rsi14 = float(last["RSI14"])
+        low52 = float(last["52W_Low"])
+        high52 = float(last["52W_High"])
 
-        # use .get and pd.isna checks to avoid exceptions
-        cmp_ = float(last["Close"]) if "Close" in last.index and not pd.isna(last["Close"]) else None
-        ema200 = float(last["EMA200"]) if "EMA200" in last.index and not pd.isna(last["EMA200"]) else None
-        rsi14 = float(last["RSI14"]) if "RSI14" in last.index and not pd.isna(last["RSI14"]) else None
-        low52 = float(last["52W_Low"]) if "52W_Low" in last.index and not pd.isna(last["52W_Low"]) else None
-        high52 = float(last["52W_High"]) if "52W_High" in last.index and not pd.isna(last["52W_High"]) else None
-
-        # Signal logic: Buy if price>EMA200 and RSI<30; Sell if price<EMA200 and RSI>70
         signal = "Neutral"
-        if ema200 is not None and rsi14 is not None and cmp_ is not None:
-            if cmp_ > ema200 and rsi14 < 30:
-                signal = "BUY"
-            elif cmp_ < ema200 and rsi14 > 70:
-                signal = "SELL"
+        if cmp_ > ema200 and rsi14 < 30:
+            signal = "BUY"
+        elif cmp_ < ema200 and rsi14 > 70:
+            signal = "SELL"
 
         return {
             "Symbol": symbol,
-            "CMP": round(cmp_, 2) if cmp_ is not None else None,
-            "52W_Low": round(low52, 2) if low52 is not None else None,
-            "52W_High": round(high52, 2) if high52 is not None else None,
-            "EMA200": round(ema200, 2) if ema200 is not None else None,
-            "RSI14": round(rsi14, 2) if rsi14 is not None else None,
-            "Signal": signal
+            "CMP": round(cmp_, 2),
+            "52W_Low": round(low52, 2),
+            "52W_High": round(high52, 2),
+            "EMA200": round(ema200, 2),
+            "RSI14": round(rsi14, 2),
+            "Signal": signal,
         }
 
     except Exception as e:
@@ -286,19 +250,17 @@ def analyze(symbol: str):
         st.text(traceback.format_exc())
         return None
 
-# =============================
-# ⚙️ Controls and Unified Scanning
-# =============================
+# ==========================================================
+# ⚙️ Controls + Placeholder for Combined Table
+# ==========================================================
+unified_table_placeholder = st.empty()
 
 st.subheader("⚙️ Controls")
 col1, col2 = st.columns([1, 2])
-
 with col1:
-    # Explicit keys prevent StreamlitDuplicateElementId
     run_now = st.button("Run Scan Now", key="run_now_btn")
     auto = st.checkbox("Enable Auto-scan (local only)", key="auto_chk")
     interval = st.number_input("Interval (sec)", value=60, step=5, min_value=5, key="interval_input")
-
 with col2:
     st.write("Status:")
     st.write(f"- GitHub Repo: {GITHUB_REPO or 'N/A'}")
@@ -308,52 +270,53 @@ with col2:
     except Exception:
         pass
 
-
-# =============================
-# 🧠 Main Scan Function
-# =============================
+# ==========================================================
+# 🚀 Unified Scan Function
+# ==========================================================
 def run_scan_once():
-    """Fetch & analyze all symbols and show unified summary table"""
     if watchlist_df is None or "Symbol" not in watchlist_df.columns:
         st.error("No watchlist available")
         return [], []
 
     symbols = watchlist_df["Symbol"].dropna().astype(str).tolist()
-    results = []
-    alerts = []
-    debug_lines = []
+    results, alerts, debug_lines = [], [], []
 
-    with st.spinner(f"Scanning {len(symbols)} symbols..."):
+    with st.spinner(f"🔍 Scanning {len(symbols)} symbols..."):
         for s in symbols:
             debug_lines.append(f"Processing {s} ...")
             r = analyze(s)
             if r:
                 results.append(r)
-                debug_lines.append(f"OK {s}: CMP={r['CMP']} EMA200={r['EMA200']} RSI={r['RSI14']}")
+                debug_lines.append(f"✅ {s}: CMP={r['CMP']} EMA200={r['EMA200']} RSI={r['RSI14']}")
                 if r["Signal"] in ("BUY", "SELL"):
                     alerts.append(f"{s}: {r['Signal']} (CMP={r['CMP']}, EMA200={r['EMA200']}, RSI={r['RSI14']})")
             else:
-                debug_lines.append(f"No result for {s}")
+                debug_lines.append(f"⚠️ No result for {s}")
             time.sleep(0.25)
 
-    # Unified table (render first)
-    st.markdown("---")
-    st.subheader("📊 Combined Summary Table")
+    # Render unified table at top
+    unified_table_placeholder.empty()
+    unified_table_placeholder.subheader("📊 Combined Summary Table")
+
     if results:
         df_result = pd.DataFrame(results)
-        st.dataframe(df_result[["Symbol", "CMP", "52W_Low", "52W_High", "EMA200", "RSI14", "Signal"]], use_container_width=True, hide_index=True)
-        st.caption(f"Last scan: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        unified_table_placeholder.dataframe(
+            df_result[["Symbol", "CMP", "52W_Low", "52W_High", "EMA200", "RSI14", "Signal"]],
+            use_container_width=True,
+            hide_index=True,
+        )
+        unified_table_placeholder.caption(f"Last scan: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     else:
-        st.warning("No valid results from scan")
+        unified_table_placeholder.warning("⚠️ No valid results from scan")
 
     # Alerts
     if alerts:
-        msg = "⚠️ Stock Alerts:\n" + "\n".join(alerts)
+        msg = "⚡ Stock Alerts:\n" + "\n".join(alerts)
         st.warning(msg)
         if TELEGRAM_TOKEN and CHAT_ID:
             send_telegram(msg)
 
-    # Collapsible debug panel
+    # Debug expander
     if debug_lines:
         with st.expander("🔍 Debug details (click to expand)"):
             for l in debug_lines:
@@ -361,10 +324,9 @@ def run_scan_once():
 
     return results, alerts
 
-
-# =============================
-# 🚀 Run / Auto-refresh Logic
-# =============================
+# ==========================================================
+# 🔁 Run / Auto-refresh Logic
+# ==========================================================
 if run_now:
     run_scan_once()
 
@@ -376,3 +338,7 @@ try:
         run_scan_once()
 except Exception:
     st.info("Optional: install streamlit-autorefresh for background scans: pip install streamlit-autorefresh")
+
+# ==========================================================
+# End of File
+# ==========================================================
