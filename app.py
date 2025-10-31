@@ -172,62 +172,52 @@ def calc_rsi_ema(df: pd.DataFrame) -> pd.DataFrame:
 # -----------------------
 # Analyzer: download & return single-row dict
 # -----------------------
-def analyze(symbol: str, period="1y"):
-    """
-    Download OHLC data for the symbol, compute indicators, and return a dict with required fields.
-    Returns None if any problem occurs or no data.
-    """
+# -----------------------
+# Analyzer
+# -----------------------
+def analyze(symbol: str):
     try:
-        raw = yf.download(symbol, period=period, interval="1d", progress=False, auto_adjust=True)
-        if raw is None or raw.empty:
-            return None
-
-        df = calc_rsi_ema(raw)
-
+        # Download 1 year of daily data for each symbol
+        df = yf.download(symbol, period="1y", interval="1d", progress=False, auto_adjust=True)
         if df is None or df.empty:
-            return None
+            raise ValueError(f"No data fetched for {symbol}")
 
+        # Calculate EMA and RSI using the existing helper
+        df = calc_rsi_ema(df)
+
+        # Compute 52-week high/low
+        df["52W_High"] = df["Close"].rolling(252, min_periods=1).max()
+        df["52W_Low"] = df["Close"].rolling(252, min_periods=1).min()
+
+        # Get latest row
         last = df.iloc[-1]
+        cmp_ = float(last["Close"])
+        ema200 = float(last["EMA200"])
+        rsi14 = float(last["RSI14"])
+        high_52w = float(last["52W_High"])
+        low_52w = float(last["52W_Low"])
 
-        # safe extraction
-        def safe_get(x, name):
-            return float(x[name]) if (name in x.index and not pd.isna(x[name])) else None
-
-        cmp_ = safe_get(last, "Close")
-        ema200 = safe_get(last, "EMA200")
-        rsi14 = safe_get(last, "RSI14")
-
-        # 52W values: prefer columns if present
-        if "52W_High" in df.columns and not pd.isna(df["52W_High"].iloc[-1]):
-            high52 = float(df["52W_High"].iloc[-1])
-            low52 = float(df["52W_Low"].iloc[-1])
-        else:
-            close = df["Close"]
-            high52 = float(close.rolling(252, min_periods=1).max().iloc[-1])
-            low52 = float(close.rolling(252, min_periods=1).min().iloc[-1])
-
-        # signal logic
+        # Signal logic
         signal = "Neutral"
-        if ema200 is not None and rsi14 is not None and cmp_ is not None:
-            if (cmp_ > ema200) and (rsi14 < 30):
-                signal = "BUY"
-            elif (cmp_ < ema200) and (rsi14 > 70):
-                signal = "SELL"
+        if cmp_ > ema200 and rsi14 < 30:
+            signal = "🔼 Oversold + Above EMA200"
+        elif cmp_ < ema200 and rsi14 > 70:
+            signal = "🔻 Overbought + Below EMA200"
 
         return {
             "Symbol": symbol,
-            "CMP": round(cmp_, 2) if cmp_ is not None else None,
-            "52W_Low": round(low52, 2) if low52 is not None else None,
-            "52W_High": round(high52, 2) if high52 is not None else None,
-            "EMA200": round(ema200, 2) if ema200 is not None else None,
-            "RSI14": round(rsi14, 2) if rsi14 is not None else None,
+            "CMP": round(cmp_, 2),
+            "52W_Low": round(low_52w, 2),
+            "52W_High": round(high_52w, 2),
+            "EMA200": round(ema200, 2),
+            "RSI14": round(rsi14, 2),
             "Signal": signal
         }
 
     except Exception as e:
-        # show minimal debug info and return None
         st.error(f"analyze() error for {symbol}: {e}")
         return None
+
 
 # -----------------------
 # Main UI
