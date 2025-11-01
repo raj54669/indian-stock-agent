@@ -15,9 +15,13 @@ except ImportError:
 
 st.markdown("<style>div.block-container {padding-top: 1rem;}</style>", unsafe_allow_html=True)
 
-# Initialize session state for alert history
+# Initialize session state for alert history as DataFrame
+
 if "alert_history" not in st.session_state:
-    st.session_state.alert_history = []
+    st.session_state.alert_history = pd.DataFrame(
+        columns=["Date & Time (IST)", "Symbol", "Signal", "CMP", "EMA200", "RSI14"]
+    )
+
 
 # -----------------------
 # Streamlit Config
