@@ -110,11 +110,12 @@ def load_excel_from_github():
 
 
 import base64
+import json
 
 def upload_to_github(file_bytes, filename="watchlist.xlsx"):
     """
-    Replace watchlist.xlsx in the configured GitHub repo with uploaded file.
-    Requires valid GITHUB_TOKEN with repo write access.
+    Replace or create watchlist.xlsx in GitHub repo.
+    Works with proper repo/token credentials.
     """
     if not (GITHUB_TOKEN and GITHUB_REPO):
         st.error("Missing GitHub credentials. Please set GITHUB_TOKEN and GITHUB_REPO.")
@@ -124,28 +125,37 @@ def upload_to_github(file_bytes, filename="watchlist.xlsx"):
         owner, repo = GITHUB_REPO.split("/", 1)
         url = f"https://api.github.com/repos/{owner}/{repo}/contents/{GITHUB_FILE_PATH}"
 
-        # Step 1: get SHA of existing file
+        # --- Step 1: Get SHA if file exists ---
+        sha = None
         get_resp = requests.get(url, headers=github_raw_headers(), timeout=10)
-        sha = get_resp.json().get("sha") if get_resp.status_code == 200 else None
+        if get_resp.status_code == 200:
+            data = get_resp.json()
+            sha = data.get("sha")
 
-        # Step 2: prepare PUT data
+        # --- Step 2: Prepare encoded content ---
         encoded_content = base64.b64encode(file_bytes).decode("utf-8")
-        data = {
+
+        payload = {
             "message": "🔄 Update watchlist.xlsx via Streamlit upload",
             "content": encoded_content,
             "branch": GITHUB_BRANCH,
         }
         if sha:
-            data["sha"] = sha
+            payload["sha"] = sha
 
-        # Step 3: PUT (commit file)
-        put_resp = requests.put(url, headers=github_raw_headers(), json=data, timeout=10)
+        # --- Step 3: PUT upload to GitHub ---
+        put_resp = requests.put(url, headers=github_raw_headers(), data=json.dumps(payload), timeout=15)
+
         if put_resp.status_code in (200, 201):
             st.sidebar.success("✅ Successfully replaced watchlist.xlsx in GitHub repo.")
             return True
         else:
-            st.sidebar.error(f"❌ GitHub upload failed: {put_resp.status_code} - {put_resp.text}")
+            st.sidebar.error(f"❌ GitHub upload failed ({put_resp.status_code}): {put_resp.text}")
             return False
+
+    except json.JSONDecodeError:
+        st.sidebar.error("❌ JSON decoding failed. The GitHub API response was invalid.")
+        return False
     except Exception as e:
         st.sidebar.error(f"❌ GitHub upload error: {e}")
         return False
