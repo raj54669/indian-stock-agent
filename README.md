@@ -20,3 +20,13 @@ A modular, production-ready Streamlit app for Indian stock market scanning, comb
 ---
 
 ## 📁 Project Structure
+project/
+│
+├── app.py # Main Streamlit entry point
+├── indicators.py # RSI, EMA200, and signal logic
+├── alerts.py # Telegram + alert history
+├── github_utils.py # Load/save Excel on GitHub
+├── ui_helpers.py # Streamlit UI helpers
+└── tests/
+├── test_indicators.py # Unit tests for indicators
+└── test_alerts.py # Unit tests for alerts
