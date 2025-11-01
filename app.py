@@ -18,7 +18,7 @@ import yfinance as yf
 from datetime import datetime, timedelta, timezone
 
 # Internal imports
-from indicators import calc_rsi_ema, analyze
+from indicators import calculate_rsi, calculate_ema, analyze_stock
 from utils import (
     send_telegram,
     load_excel_from_github,
@@ -142,63 +142,103 @@ def add_to_alert_history(symbol: str, signal: str, cmp_: float, ema200: float, r
         ignore_index=True
     )
 
+# -----------------------
+# Run Scan (modular + reliable)
+# -----------------------
 def run_scan():
-    """Runs scan for all symbols and updates UI."""
     results = []
+    debug_logs = []
+    errors_found = False
 
     for symbol in symbols:
         try:
-            data = yf.download(symbol, period="1y", interval="1d", progress=False, auto_adjust=True)
-            if data is None or data.empty:
-                st.warning(f"⚠️ No data for {symbol}")
+            debug_logs.append(f"Processing {symbol} ...")
+
+            # Download last 1 year of data
+            df = yf.download(symbol, period="1y", interval="1d", progress=False, auto_adjust=True)
+
+            if df is None or df.empty:
+                msg = f"⚠️ No data for {symbol}"
+                debug_logs.append(msg)
+                errors_found = True
                 continue
 
-            df = calc_rsi_ema(data)
-            if df is None or df.empty:
+            # --- ✅ Use modular indicators ---
+            if "Close" not in df.columns:
+                st.warning(f"{symbol}: Missing 'Close' column")
                 continue
+
+            df["EMA200"] = calculate_ema(df["Close"], span=200)
+            df["RSI14"] = calculate_rsi(df["Close"])
+
+            # 52-week high/low (approx. 252 trading days)
+            high_52w = df["Close"].tail(252).max()
+            low_52w = df["Close"].tail(252).min()
 
             last = df.iloc[-1]
-            cmp_, ema200, rsi14 = last["Close"], last["EMA200"], last["RSI14"]
+            cmp_ = float(last["Close"])
+            ema200 = float(last["EMA200"])
+            rsi14 = float(last["RSI14"])
 
-            # Signal logic (unchanged)
+            # --- Determine signal (same as before) ---
             signal = "Neutral"
+            condition_desc = None
+
             if cmp_ > ema200 and rsi14 < 30:
                 signal = "🟢 BUY"
+                condition_desc = "RSI < 30 and CMP above EMA200"
+
             elif cmp_ < ema200 and rsi14 > 70:
                 signal = "🔴 SELL"
+                condition_desc = "RSI > 70 and CMP below EMA200"
+
             elif abs(cmp_ - ema200) / cmp_ <= 0.02 and 30 <= rsi14 <= 40:
                 signal = "🟡 WATCH"
+                condition_desc = "EMA200 within ±2% of CMP & RSI between 30–40"
 
-            # Add alert if triggered
-            if signal != "Neutral":
+            # --- Record and send alerts for triggered signals ---
+            if signal in ("🟢 BUY", "🔴 SELL", "🟡 WATCH"):
                 add_to_alert_history(symbol, signal, cmp_, ema200, rsi14)
+
                 emoji = "⚡" if "WATCH" in signal else ("📈" if "BUY" in signal else "📉")
                 alert_msg = (
                     f"{emoji} *Alert:* {symbol}\n"
                     f"CMP = {cmp_:.2f}\n"
                     f"EMA200 = {ema200:.2f}\n"
                     f"RSI14 = {rsi14:.2f}\n"
-                    f"Signal: {signal}"
+                    f"Condition: {condition_desc}"
                 )
                 send_telegram(alert_msg)
 
+            # --- Save result row ---
             results.append({
                 "Symbol": symbol,
                 "CMP": round(cmp_, 2),
+                "52W_Low": round(low_52w, 2),
+                "52W_High": round(high_52w, 2),
                 "EMA200": round(ema200, 2),
                 "RSI14": round(rsi14, 2),
                 "Signal": signal
             })
 
-        except Exception as e:
-            st.error(f"❌ {symbol}: {e}")
+            debug_logs.append(f"✅ OK {symbol}: CMP={cmp_} EMA200={ema200} RSI={rsi14}")
 
+        except Exception as e:
+            msg = f"❌ {symbol}: {e}"
+            debug_logs.append(msg)
+            st.error(msg)
+            errors_found = True
+
+    # --- Update UI ---
     if results:
         df = pd.DataFrame(results)
-        display_stock_summary(df)
-        last_scan_time.caption(f"Last scan: {datetime.now(IST).strftime('%Y-%m-%d %H:%M:%S %Z')}")
+        summary_placeholder.dataframe(df, use_container_width=True, hide_index=True)
+        from datetime import timezone, timedelta
+        ist = timezone(timedelta(hours=5, minutes=30))
+        last_scan_time.caption(f"Last scan: {datetime.now(ist).strftime('%Y-%m-%d %H:%M:%S %Z')}")
     else:
-        st.warning("⚠️ No valid results found.")
+        summary_placeholder.warning("No valid data fetched.")
+
 
 # -------------------------------
 # Buttons & Auto Scan
