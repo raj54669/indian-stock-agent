@@ -108,6 +108,49 @@ def load_excel_from_github():
         st.error(f"Error loading from GitHub: {e}")
         return pd.DataFrame()
 
+
+import base64
+
+def upload_to_github(file_bytes, filename="watchlist.xlsx"):
+    """
+    Replace watchlist.xlsx in the configured GitHub repo with uploaded file.
+    Requires valid GITHUB_TOKEN with repo write access.
+    """
+    if not (GITHUB_TOKEN and GITHUB_REPO):
+        st.error("Missing GitHub credentials. Please set GITHUB_TOKEN and GITHUB_REPO.")
+        return False
+
+    try:
+        owner, repo = GITHUB_REPO.split("/", 1)
+        url = f"https://api.github.com/repos/{owner}/{repo}/contents/{GITHUB_FILE_PATH}"
+
+        # Step 1: get SHA of existing file
+        get_resp = requests.get(url, headers=github_raw_headers(), timeout=10)
+        sha = get_resp.json().get("sha") if get_resp.status_code == 200 else None
+
+        # Step 2: prepare PUT data
+        encoded_content = base64.b64encode(file_bytes).decode("utf-8")
+        data = {
+            "message": "🔄 Update watchlist.xlsx via Streamlit upload",
+            "content": encoded_content,
+            "branch": GITHUB_BRANCH,
+        }
+        if sha:
+            data["sha"] = sha
+
+        # Step 3: PUT (commit file)
+        put_resp = requests.put(url, headers=github_raw_headers(), json=data, timeout=10)
+        if put_resp.status_code in (200, 201):
+            st.sidebar.success("✅ Successfully replaced watchlist.xlsx in GitHub repo.")
+            return True
+        else:
+            st.sidebar.error(f"❌ GitHub upload failed: {put_resp.status_code} - {put_resp.text}")
+            return False
+    except Exception as e:
+        st.sidebar.error(f"❌ GitHub upload error: {e}")
+        return False
+
+
 # -----------------------
 # Sidebar: upload + status  (kept exactly as original)
 # -----------------------
@@ -128,8 +171,17 @@ if uploaded_file is not None:
             watchlist_df = df_up
             use_uploaded = True
             st.sidebar.success(f"✅ Using uploaded watchlist ({len(watchlist_df)} symbols)")
+
+            # --- 🧩 NEW: Auto-replace file on GitHub ---
+            file_bytes = uploaded_file.getvalue()
+            success = upload_to_github(file_bytes)
+            if success:
+                st.sidebar.info("🔁 GitHub watchlist.xlsx updated successfully.")
+            else:
+                st.sidebar.warning("⚠️ Failed to update GitHub file. Check token permissions.")
     except Exception as e:
         st.sidebar.error(f"Error reading uploaded file: {e}")
+
 
 if not use_uploaded:
     watchlist_df = load_excel_from_github()
