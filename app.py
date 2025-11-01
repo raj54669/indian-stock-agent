@@ -513,30 +513,33 @@ def add_to_alert_history(symbol: str, signal: str, cmp_: float, ema200: float, r
     st.session_state["alert_history"] = st.session_state["alert_history"][expected_cols]
 
 # -----------------------------
-# 🧾 ALERT HISTORY DISPLAY
+# 🧾 ALERT HISTORY DISPLAY (Auto-Hide Clear Button)
 # -----------------------------
-st.markdown("### 📜 Alert History")
+st.subheader("📜 Alert History")
 
+# Ensure alert_history exists and is a DataFrame
 if "alert_history" not in st.session_state or not isinstance(st.session_state["alert_history"], pd.DataFrame):
     st.session_state["alert_history"] = pd.DataFrame(
         columns=["Date & Time (IST)", "Symbol", "Signal", "CMP", "EMA200", "RSI14"]
     )
 
-clear_col1, clear_col2 = st.columns([1, 4])
-with clear_col1:
-    if st.button("🧹 Clear History", use_container_width=True):
-        st.session_state["alert_history"] = pd.DataFrame(
-            columns=["Date & Time (IST)", "Symbol", "Signal", "CMP", "EMA200", "RSI14"]
-        )
-        st.success("✅ Alert history cleared.")
-
+# Show history table and Clear button only when data exists
 if not st.session_state["alert_history"].empty:
     st.dataframe(
         st.session_state["alert_history"],
         use_container_width=True,
         hide_index=True,
     )
+
+    # Clear button only visible when there’s data
+    if st.button("🧹 Clear History"):
+        st.session_state["alert_history"] = pd.DataFrame(
+            columns=["Date & Time (IST)", "Symbol", "Signal", "CMP", "EMA200", "RSI14"]
+        )
+        st.success("✅ Alert history cleared!")
+        st.experimental_rerun()
 else:
+    # No data: only show the info message, hide buttons and success messages
     st.info("No alerts recorded yet. Run a scan to generate new alerts.")
 
 # -----------------------
