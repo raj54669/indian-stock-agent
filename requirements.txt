@@ -6,3 +6,4 @@ requests
 openpyxl
 pytz
 pytest
+streamlit-autorefresh
