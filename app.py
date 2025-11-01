@@ -477,36 +477,45 @@ def run_scan():
 from datetime import timezone, timedelta
 IST = timezone(timedelta(hours=5, minutes=30))
 
-# Initialize session state
-if "alert_history" not in st.session_state:
-    st.session_state.alert_history = pd.DataFrame(
-        columns=["Date & Time (IST)", "Symbol", "Signal", "CMP", "EMA200", "RSI14"]
-    )
+# -----------------------
+# 🔔 Add Alert to History (Safe, Persistent)
+# -----------------------
+def add_to_alert_history(symbol: str, signal: str, cmp_: float, ema200: float, rsi14: float):
+    """
+    Append a new alert entry to the Streamlit session state's alert history DataFrame.
+    Ensures the structure is consistent and avoids accidental list overwrites.
+    """
+    # Defensive guard: recreate DataFrame if somehow corrupted
+    if "alert_history" not in st.session_state or not isinstance(st.session_state["alert_history"], pd.DataFrame):
+        st.session_state["alert_history"] = pd.DataFrame(
+            columns=["Date & Time (IST)", "Symbol", "Signal", "CMP", "EMA200", "RSI14"]
+        )
 
-# Function to append alerts
-def add_to_alert_history(symbol, signal, cmp_, ema200, rsi14):
     ts = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
+
     new_row = pd.DataFrame([{
         "Date & Time (IST)": ts,
         "Symbol": symbol,
         "Signal": signal,
-        "CMP": round(cmp_, 2),
-        "EMA200": round(ema200, 2),
-        "RSI14": round(rsi14, 2)
+        "CMP": round(float(cmp_), 2),
+        "EMA200": round(float(ema200), 2),
+        "RSI14": round(float(rsi14), 2),
     }])
-    st.session_state.alert_history = pd.concat(
-        [st.session_state.alert_history, new_row],
+
+    # Append the new row safely
+    st.session_state["alert_history"] = pd.concat(
+        [st.session_state["alert_history"], new_row],
         ignore_index=True
     )
+
+    # Optional: ensure correct column ordering
+    expected_cols = ["Date & Time (IST)", "Symbol", "Signal", "CMP", "EMA200", "RSI14"]
+    st.session_state["alert_history"] = st.session_state["alert_history"][expected_cols]
 
 # -----------------------
 # 📜 Alert History Section
 # -----------------------
 st.subheader("📜 Alert History")
-
-# Ensure alert_history is initialized
-if "alert_history" not in st.session_state:
-    st.session_state["alert_history"] = pd.DataFrame(columns=["Date & Time", "Symbol", "Signal", "CMP", "EMA200", "RSI14"])
 
 # Display alert history table
 if not st.session_state["alert_history"].empty:
