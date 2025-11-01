@@ -34,7 +34,7 @@ if "confirm_clear" not in st.session_state:
 # Streamlit Config
 # -----------------------
 st.set_page_config(page_title="📈 Indian Stock Agent – EMA + RSI Alert Bot", layout="wide")
-st.markdown("<style>div.block-container {padding-top: 1rem;}</style>", unsafe_allow_html=True)
+st.markdown("<style>div.block-container {padding-top: 0rem;}</style>", unsafe_allow_html=True)
 
 # -----------------------
 # === Improvement Constants (1. Hardcoded Constants) ===
