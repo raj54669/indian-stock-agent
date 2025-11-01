@@ -107,6 +107,13 @@ def load_excel_from_github():
     except Exception as e:
         st.error(f"Error loading from GitHub: {e}")
         return pd.DataFrame()
+
+# -----------------------
+# Sidebar: upload + status  (kept exactly as original)
+# -----------------------
+st.sidebar.header("📂 Watchlist Management")
+uploaded_file = st.sidebar.file_uploader("Upload new watchlist (Excel)", type=["xlsx"])
+
 # -----------------------
 # Upload Excel to GitHub
 # -----------------------
@@ -114,7 +121,7 @@ import base64
 import json
 import requests
 
-def upload_to_github_file(file_bytes, repo, path, branch, token, commit_message="Auto-update watchlist.xlsx"):
+def upload_to_github(file_bytes, repo, path, branch, token, commit_message="Auto-update watchlist.xlsx"):
     """
     Uploads or replaces a file in a GitHub repo using a fine-grained token.
     Returns True if successful, else False and an error message.
@@ -152,12 +159,6 @@ def upload_to_github_file(file_bytes, repo, path, branch, token, commit_message=
 
     except Exception as e:
         return False, f"❌ Upload error: {e}"
-
-# -----------------------
-# Sidebar: upload + status  (kept exactly as original)
-# -----------------------
-st.sidebar.header("📂 Watchlist Management")
-uploaded_file = st.sidebar.file_uploader("Upload new watchlist (Excel)", type=["xlsx"])
 
 # -----------------------
 # Load watchlist (uploaded override or GitHub)
