@@ -1,66 +1,66 @@
-import os
-import io
+import base64, io
 import pandas as pd
-from github import Github
-import streamlit as st
 import requests
+import streamlit as st
 
-# --------------------------------------------
-# 🔔 Telegram Utilities
-# --------------------------------------------
-def send_telegram(message: str):
-    """Send a Telegram alert using bot token and chat ID."""
-    token = st.secrets["TELEGRAM"]["BOT_TOKEN"]
-    chat_id = st.secrets["TELEGRAM"]["CHAT_ID"]
-    url = f"https://api.telegram.org/bot{token}/sendMessage"
-    payload = {"chat_id": chat_id, "text": message, "parse_mode": "Markdown"}
+def github_raw_headers(token):
+    auth_scheme = 'token'
+    return {
+        'Authorization': f'{auth_scheme} {token}',
+        'Accept': 'application/vnd.github.v3+json',
+        'User-Agent': 'streamlit-indian-stock-agent'
+    }
+
+@st.cache_data(ttl=120)
+def load_watchlist_from_github():
     try:
-        response = requests.post(url, json=payload)
-        response.raise_for_status()
-        return True
-    except Exception as e:
-        st.error(f"Telegram send failed: {e}")
+        token = st.secrets['GITHUB_TOKEN']
+        repo = st.secrets['GITHUB_REPO']
+        branch = st.secrets.get('GITHUB_BRANCH','main')
+        path = st.secrets.get('GITHUB_FILE_PATH','watchlist.xlsx')
+    except Exception:
+        return pd.DataFrame()
+    url = f'https://api.github.com/repos/{repo}/contents/{path}?ref={branch}'
+    try:
+        r = requests.get(url, headers=github_raw_headers(token), timeout=10)
+        r.raise_for_status()
+        data = r.json()
+        content = data.get('content','')
+        decoded = base64.b64decode(content)
+        return pd.read_excel(io.BytesIO(decoded))
+    except Exception:
+        return pd.DataFrame()
+
+def upload_watchlist_to_github(uploaded_file) -> bool:
+    try:
+        token = st.secrets['GITHUB_TOKEN']
+        repo = st.secrets['GITHUB_REPO']
+        branch = st.secrets.get('GITHUB_BRANCH','main')
+        path = st.secrets.get('GITHUB_FILE_PATH','watchlist.xlsx')
+    except Exception:
+        st.error('Missing GitHub secrets')
         return False
 
-
-# --------------------------------------------
-# 📂 GitHub Utilities
-# --------------------------------------------
-def load_excel_from_github():
-    """Load the default watchlist Excel file from GitHub."""
-    repo_name = st.secrets["GITHUB"]["REPO_NAME"]
-    file_path = st.secrets["GITHUB"]["WATCHLIST_PATH"]
-    token = st.secrets["GITHUB"]["TOKEN"]
-
-    g = Github(token)
-    repo = g.get_repo(repo_name)
-    file_content = repo.get_contents(file_path)
-    content = io.BytesIO(file_content.decoded_content)
-    df = pd.read_excel(content)
-    return df
-
-
-def upload_to_github(uploaded_file):
-    """
-    Replace the existing GitHub watchlist Excel file with a new uploaded file.
-    """
-    repo_name = st.secrets["GITHUB"]["REPO_NAME"]
-    file_path = st.secrets["GITHUB"]["WATCHLIST_PATH"]
-    token = st.secrets["GITHUB"]["TOKEN"]
-
-    g = Github(token)
-    repo = g.get_repo(repo_name)
-
-    content = uploaded_file.read()
+    # get current SHA if exists
+    get_url = f'https://api.github.com/repos/{repo}/contents/{path}?ref={branch}'
+    headers = github_raw_headers(token)
+    sha = None
     try:
-        existing_file = repo.get_contents(file_path)
-        repo.update_file(
-            path=file_path,
-            message="♻️ Updated watchlist via Streamlit app",
-            content=content,
-            sha=existing_file.sha,
-            branch="main",
-        )
-        st.success("✅ Watchlist successfully updated in GitHub!")
+        r = requests.get(get_url, headers=headers, timeout=10)
+        r.raise_for_status()
+        sha = r.json().get('sha')
+    except Exception:
+        sha = None
+
+    content_b64 = base64.b64encode(uploaded_file.getvalue()).decode('utf-8')
+    payload = {'message':'Updated watchlist via Streamlit','content':content_b64,'branch':branch}
+    if sha:
+        payload['sha']=sha
+    put_url = f'https://api.github.com/repos/{repo}/contents/{path}'
+    try:
+        res = requests.put(put_url, headers=headers, json=payload, timeout=20)
+        res.raise_for_status()
+        return True
     except Exception as e:
-        st.error(f"GitHub upload failed: {e}")
+        st.error(f'GitHub upload failed: {e}')
+        return False
