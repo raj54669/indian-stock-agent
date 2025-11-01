@@ -1,4 +1,4 @@
-# app.py — Final single-file (preserves original logic + fixes)
+# app.py — Final single-file (live data, no cache, auto-scan ON by default)
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -9,13 +9,12 @@ from typing import Optional, Dict, Any, List
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # -----------------------
-# Config / constants
+# Configuration / constants
 # -----------------------
 EMA_SPAN = 200
 RSI_PERIOD = 14
 ALERT_THROTTLE_MIN = 60  # minutes to throttle repeated alerts per symbol
-CACHE_TTL = 300  # seconds for cached downloads
-MAX_WORKERS = 8
+MAX_WORKERS = 6
 YF_PERIOD = "2y"
 YF_INTERVAL = "1d"
 IST = timezone(timedelta(hours=5, minutes=30))
@@ -29,7 +28,7 @@ except Exception:
     st_autorefresh = None
 
 # -----------------------
-# Streamlit setup
+# Streamlit page config & style
 # -----------------------
 st.set_page_config(page_title="📈 Indian Stock Agent – EMA + RSI Alert Bot", layout="wide")
 st.markdown("<style>div.block-container {padding-top: 1rem;}</style>", unsafe_allow_html=True)
@@ -72,9 +71,8 @@ def _github_headers(token: Optional[str]):
         "User-Agent": "streamlit-indian-stock-agent"
     }
 
-@st.cache_data(ttl=CACHE_TTL)
 def load_excel_from_github() -> pd.DataFrame:
-    """Load watchlist file from GitHub repo (returns empty df on failure)."""
+    """Load watchlist file from GitHub repo. Returns empty DataFrame on failure."""
     if not (GITHUB_TOKEN and GITHUB_REPO):
         return pd.DataFrame()
     try:
@@ -92,7 +90,7 @@ def load_excel_from_github() -> pd.DataFrame:
         return pd.DataFrame()
 
 def upload_watchlist_to_github(uploaded_bytes: bytes) -> bool:
-    """Upload/replace watchlist file on GitHub. Best-effort; shows error to user."""
+    """Upload/replace watchlist file on GitHub (best-effort)."""
     if not (GITHUB_TOKEN and GITHUB_REPO):
         st.error("Missing GitHub credentials (GITHUB_TOKEN / GITHUB_REPO).")
         return False
@@ -120,7 +118,7 @@ def upload_watchlist_to_github(uploaded_bytes: bytes) -> bool:
         return False
 
 # -----------------------
-# Session state init
+# Session state initialization
 # -----------------------
 def init_session_state():
     if "alert_history" not in st.session_state or not isinstance(st.session_state["alert_history"], pd.DataFrame):
@@ -129,6 +127,7 @@ def init_session_state():
         st.session_state["last_alert_ts"] = {}
     if "debug_logs" not in st.session_state:
         st.session_state["debug_logs"] = []
+    # defaults: auto-scan ON by default, telegram enabled ON by default
     if "scan_interval" not in st.session_state:
         st.session_state["scan_interval"] = 60
     if "auto_scan_enabled" not in st.session_state:
@@ -137,6 +136,8 @@ def init_session_state():
         st.session_state["telegram_enabled"] = True
     if "parallel_fetch" not in st.session_state:
         st.session_state["parallel_fetch"] = True
+    if "last_scan_time" not in st.session_state:
+        st.session_state["last_scan_time"] = None
 
 init_session_state()
 
@@ -203,33 +204,32 @@ def calc_rsi_ema(df: pd.DataFrame) -> Optional[pd.DataFrame]:
         return None
 
 # -----------------------
-# Per-symbol data caching (keyed by symbol)
+# Live data fetch (no caching) — careful: will hit Yahoo on each call
 # -----------------------
-@st.cache_data(ttl=CACHE_TTL)
-def get_symbol_history(symbol: str, period: str = YF_PERIOD, interval: str = YF_INTERVAL) -> pd.DataFrame:
-    """Return history DataFrame for a symbol. Cached per-symbol by Streamlit."""
+def fetch_live_history(symbol: str, period: str = YF_PERIOD, interval: str = YF_INTERVAL) -> pd.DataFrame:
+    """
+    Fetch history from yfinance *live*. No caching to ensure real-time values.
+    """
     try:
         df = yf.download(symbol, period=period, interval=interval, progress=False, auto_adjust=True)
         if df is None:
             return pd.DataFrame()
-        # return a copy to avoid accidental shared-memory issues
         return df.copy()
     except Exception as e:
         st.session_state["debug_logs"].append(f"yf.download error {symbol}: {e}")
         return pd.DataFrame()
 
 # -----------------------
-# Central analyze function (original signals preserved)
+# Central analyze function (preserves original signals)
 # -----------------------
 def analyze(symbol: str) -> Optional[Dict[str, Any]]:
     try:
-        df = get_symbol_history(symbol)
+        df = fetch_live_history(symbol)
         if df is None or df.empty:
             return None
         df_ind = calc_rsi_ema(df)
         if df_ind is None or df_ind.empty:
             return None
-        # use a copy of last row to ensure isolation
         last = df_ind.iloc[-1].copy()
         cmp_ = float(last["Close"])
         ema200 = float(last["EMA200"])
@@ -238,7 +238,6 @@ def analyze(symbol: str) -> Optional[Dict[str, Any]]:
         high52 = float(last["52W_High"])
         signal = "Neutral"
         alert_condition = ""
-        # WATCH: EMA200 within ±2% & RSI 30–40
         if (cmp_ * 0.98 <= ema200 <= cmp_ * 1.02) and (30 <= rsi14 <= 40):
             signal = "🟡 WATCH"
             alert_condition = "EMA200 within ±2% of CMP & RSI between 30–40"
@@ -358,10 +357,12 @@ def run_scan(symbols: List[str], parallel: bool = True) -> pd.DataFrame:
     except Exception as e:
         logs.append(f"run_scan fatal error: {e}")
     st.session_state["debug_logs"] = logs
+    # update last scan time
+    st.session_state["last_scan_time"] = datetime.now(IST)
     return pd.DataFrame(results) if results else pd.DataFrame()
 
 # -----------------------
-# Sidebar: Watchlist + Settings
+# Sidebar: Watchlist + Settings + Status (single source)
 # -----------------------
 st.sidebar.header("📂 Watchlist Management")
 uploaded_file = st.sidebar.file_uploader("Upload new watchlist (Excel)", type=["xlsx"])
@@ -380,7 +381,6 @@ if uploaded_file is not None:
             # attempt GitHub upload (best-effort)
             try:
                 upload_watchlist_to_github(uploaded_file.getvalue())
-                load_excel_from_github.clear()
             except Exception:
                 pass
     except Exception as e:
@@ -390,16 +390,14 @@ if not use_uploaded:
     watchlist_df = load_excel_from_github()
     st.sidebar.info("Using GitHub watchlist as default source")
 
+# Sidebar settings
 st.sidebar.header("Settings")
-st.sidebar.subheader("Telegram")
 st.session_state["telegram_enabled"] = st.sidebar.checkbox("Enable Telegram Alerts", value=st.session_state["telegram_enabled"])
-st.sidebar.subheader("Auto-scan")
-st.session_state["auto_scan_enabled"] = st.sidebar.checkbox("Enable Auto-scan", value=st.session_state["auto_scan_enabled"])
+st.session_state["auto_scan_enabled"] = st.sidebar.checkbox("Enable Auto-scan (default ON)", value=st.session_state["auto_scan_enabled"])
 st.session_state["scan_interval"] = st.sidebar.number_input("Auto-scan Interval (sec)", min_value=5, value=int(st.session_state["scan_interval"]), step=5)
-st.sidebar.subheader("Advanced")
 st.session_state["parallel_fetch"] = st.sidebar.checkbox("Parallel downloads (faster)", value=st.session_state["parallel_fetch"])
 
-# Sidebar status
+# Sidebar status (single authoritative status)
 st.sidebar.markdown("---")
 st.sidebar.markdown("**Status**")
 st.sidebar.write(f"- GitHub Repo: `{GITHUB_REPO or 'N/A'}`")
@@ -418,7 +416,7 @@ else:
     watchlist_df = pd.DataFrame()
 
 # -----------------------
-# Main UI: Title + Summary Table placeholder
+# Main UI: Title + Summary placeholder
 # -----------------------
 st.title("📊 Indian Stock Agent – EMA + RSI Alert Bot")
 if watchlist_df.empty or "Symbol" not in watchlist_df.columns:
@@ -427,7 +425,7 @@ if watchlist_df.empty or "Symbol" not in watchlist_df.columns:
 else:
     symbols = watchlist_df["Symbol"].dropna().astype(str).tolist()
 
-st.subheader("📋 Combined Summary Table")
+st.subheader("📋 Combined Summary Table (Live Data)")
 initial_df = pd.DataFrame({
     "Symbol": symbols if symbols else [],
     "CMP": ["" for _ in symbols] if symbols else [],
@@ -439,9 +437,8 @@ initial_df = pd.DataFrame({
     "AlertCondition": ["" for _ in symbols] if symbols else []
 })
 summary_placeholder = st.empty()
-# show placeholder table initially
 summary_placeholder.dataframe(initial_df, use_container_width=True, hide_index=True)
-last_scan_time = st.caption("Will auto-update after scanning.")
+last_scan_time_display = st.caption("Will auto-update after scanning (live data).")
 
 # -----------------------
 # Controls (main)
@@ -450,42 +447,48 @@ st.subheader("⚙️ Controls")
 col1, col2 = st.columns([1, 2])
 with col1:
     run_now = st.button("Run Scan Now")
-    if st.button("🔁 Refresh Watchlist from GitHub"):
-        load_excel_from_github.clear()
-        watchlist_df = load_excel_from_github()
-        st.experimental_rerun()
+    if st.button("Refresh Watchlist from GitHub"):
+        # Clear loaded watchlist cache by simply reloading and rerunning
+        # We don't use st.cache here, so just reload.
+        try:
+            new_watchlist = load_excel_from_github()
+            if not new_watchlist.empty:
+                watchlist_df = new_watchlist
+            st.success("✅ Watchlist refreshed from GitHub.")
+            st.rerun()
+        except Exception:
+            st.error("Failed to refresh watchlist.")
     st.write("")
     st.markdown("**Options**")
     st.write(f"- Parallel downloads: {'✅' if st.session_state['parallel_fetch'] else '❌'}")
 with col2:
     st.markdown("**Status:**")
-    st.write(f"- GitHub Repo: `{GITHUB_REPO or 'N/A'}`")
-    st.write(f"- Token: {'✅' if GITHUB_TOKEN else '❌'}")
-    if st.session_state.get("auto_scan_enabled", False):
-        st.markdown(f"<span style='margin-left:10px;'>🔁 Auto-scan active — every {st.session_state['scan_interval']} seconds</span>", unsafe_allow_html=True)
+    # We intentionally keep the status short here (sidebar has full status)
+    st.write(f"- Auto-scan: {'ON' if st.session_state['auto_scan_enabled'] else 'OFF'}")
+    if st.session_state.get("last_scan_time"):
+        st.write(f"- Last scan: {st.session_state['last_scan_time'].strftime('%Y-%m-%d %H:%M:%S %Z')}")
 
 # -----------------------
-# Scan execution
+# Scan execution helper + display formatting
 # -----------------------
 def _format_and_display(df_results: pd.DataFrame):
-    if df_results.empty:
+    # Remove internal columns from summary view if present
+    df_display = df_results.copy() if not df_results.empty else df_results
+    df_display = df_display.drop(columns=["AlertCondition", "TelegramMessage"], errors="ignore")
+    if df_display.empty:
         summary_placeholder.warning("No valid data fetched.")
         return
-    # ensure types and format
-    df_results = df_results.copy()
-    # enforce numeric types where expected
+    # ensure numeric formatting
     for col in ("CMP", "EMA200", "RSI14", "52W_Low", "52W_High"):
-        if col in df_results.columns:
-            df_results[col] = pd.to_numeric(df_results[col], errors="coerce")
-    # format floats
-    styled = df_results.style.format({
+        if col in df_display.columns:
+            df_display[col] = pd.to_numeric(df_display[col], errors="coerce")
+    styled = df_display.style.format({
         "CMP": "{:,.2f}",
         "EMA200": "{:,.2f}",
         "RSI14": "{:,.2f}",
         "52W_Low": "{:,.2f}",
-        "52W_High": "{:,.2f}",
+        "52W_High": "{:,.2f}"
     })
-    # simple row color based on signal
     def row_color(r):
         sig = str(r.get("Signal", ""))
         if "BUY" in sig:
@@ -497,26 +500,31 @@ def _format_and_display(df_results: pd.DataFrame):
         return [""] * len(r)
     styled = styled.apply(row_color, axis=1)
     summary_placeholder.dataframe(styled, use_container_width=True)
-    last_scan_time.caption(f"Last scan: {datetime.now(IST).strftime('%Y-%m-%d %H:%M:%S %Z')}")
+    st.session_state["last_scan_time"] = datetime.now(IST)
+    last_scan_time_display.caption(f"Last scan: {st.session_state['last_scan_time'].strftime('%Y-%m-%d %H:%M:%S %Z')} (Live)")
 
+# If run_now pressed, perform scan now
 if run_now:
-    with st.spinner("Scanning..."):
+    with st.spinner("Scanning live data..."):
         df_results = run_scan(symbols, parallel=st.session_state["parallel_fetch"])
         _format_and_display(df_results)
 
 # -----------------------
-# Auto-scan (safe)
+# Auto-scan behavior (live)
 # -----------------------
 if st.session_state.get("auto_scan_enabled", False):
     if st_autorefresh:
         try:
-            # Only sets up autorefresh - avoid forcing scan on every render to prevent heavy usage.
+            # set up autorefresh (this triggers a rerun)
             st_autorefresh(interval=int(st.session_state["scan_interval"]) * 1000, key="auto_refresh")
-            # If you want scans auto-triggered on refresh, you can enable a flag to call run_scan here.
         except Exception:
             st.warning("Auto-refresh misconfigured. Install streamlit-autorefresh to enable auto-scan.")
     else:
         st.warning("Auto-refresh package missing. Run: pip install streamlit-autorefresh")
+    # On every rerun (including the first one after autorefresh triggers), run a live scan
+    with st.spinner("Auto-scanning live data..."):
+        df_results = run_scan(symbols, parallel=st.session_state["parallel_fetch"])
+        _format_and_display(df_results)
 
 # -----------------------
 # Alert History UI
@@ -533,7 +541,6 @@ else:
         df_show = df_hist[mask]
     else:
         df_show = df_hist
-    # format display
     st.dataframe(df_show.reset_index(drop=True), use_container_width=True, hide_index=True)
     col_clear, col_export = st.columns([1, 1])
     with col_export:
@@ -544,11 +551,11 @@ else:
             st.button("🧹 Clear History", disabled=True)
         else:
             if st.button("🧹 Clear History"):
-                # confirmation to avoid accidental clears
+                # Confirmation checkbox to avoid accidental clears
                 if st.checkbox("Confirm clear history"):
                     st.session_state["alert_history"] = pd.DataFrame(columns=["Date & Time (IST)", "Symbol", "Signal", "CMP", "EMA200", "RSI14"])
                     st.success("✅ Alert history cleared.")
-                    # no forced rerun; clear applied to session_state and table refreshed automatically
+                    # no forced rerun; change reflected automatically
 
 # -----------------------
 # Debug logs + Test Telegram
