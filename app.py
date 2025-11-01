@@ -15,6 +15,40 @@ except ImportError:
 
 st.markdown("<style>div.block-container {padding-top: 1rem;}</style>", unsafe_allow_html=True)
 
+# -----------------------------
+# 🧾 ALERT HISTORY DISPLAY
+# -----------------------------
+import pandas as pd
+import streamlit as st
+
+st.markdown("### 📜 Alert History")
+
+# 1️⃣ Ensure session_state has a proper DataFrame
+if "alert_history" not in st.session_state or not isinstance(st.session_state["alert_history"], pd.DataFrame):
+    st.session_state["alert_history"] = pd.DataFrame(
+        columns=["Date & Time (IST)", "Symbol", "Signal", "CMP", "EMA200", "RSI14"]
+    )
+
+# 2️⃣ Handle the "Clear History" button
+clear_col1, clear_col2 = st.columns([1, 4])
+with clear_col1:
+    if st.button("🧹 Clear History", use_container_width=True):
+        st.session_state["alert_history"] = pd.DataFrame(
+            columns=["Date & Time (IST)", "Symbol", "Signal", "CMP", "EMA200", "RSI14"]
+        )
+        st.success("✅ Alert history cleared.")
+
+# 3️⃣ Display the table (if not empty)
+if not st.session_state["alert_history"].empty:
+    st.dataframe(
+        st.session_state["alert_history"],
+        use_container_width=True,
+        hide_index=True,
+    )
+else:
+    st.info("No alerts recorded yet. Run a scan to generate new alerts.")
+
+
 # Initialize session state for alert history as DataFrame
 
 if "alert_history" not in st.session_state:
