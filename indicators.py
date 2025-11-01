@@ -1,105 +1,57 @@
-"""
-indicators.py
----------------------------------
-Contains indicator calculations and signal generation logic.
-This module focuses purely on data science logic — no Streamlit or I/O operations.
-
-Functions:
-    - calculate_ema200(df)
-    - calculate_rsi14(df)
-    - generate_signal(df)
-"""
-
 import pandas as pd
 import numpy as np
 
-# ---------------------------
-# 📘 Exponential Moving Average (EMA200)
-# ---------------------------
-def calculate_ema200(df: pd.DataFrame) -> pd.Series:
-    """
-    Calculates the 200-period Exponential Moving Average (EMA) for 'Close' prices.
-
-    Parameters
-    ----------
-    df : pd.DataFrame
-        DataFrame containing a 'Close' column.
-
-    Returns
-    -------
-    pd.Series
-        The EMA200 values.
-    """
-    if "Close" not in df.columns:
-        raise KeyError("DataFrame must contain 'Close' column to compute EMA200.")
-    return df["Close"].ewm(span=200, adjust=False).mean()
-
-
-# ---------------------------
-# 📘 Relative Strength Index (RSI14)
-# ---------------------------
-def calculate_rsi14(df: pd.DataFrame) -> pd.Series:
-    """
-    Calculates the 14-period RSI using the standard Wilder's method.
-
-    Parameters
-    ----------
-    df : pd.DataFrame
-        DataFrame containing a 'Close' column.
-
-    Returns
-    -------
-    pd.Series
-        The RSI14 values (0–100 scale).
-    """
-    if "Close" not in df.columns:
-        raise KeyError("DataFrame must contain 'Close' column to compute RSI.")
-
-    delta = df["Close"].diff()
+# --------------------------------------------
+# ✅ Calculate RSI (modular, standalone)
+# --------------------------------------------
+def calculate_rsi(close_series: pd.Series, period: int = 14) -> pd.Series:
+    """Compute RSI from a pandas Series of close prices."""
+    delta = close_series.diff()
     gain = delta.clip(lower=0)
     loss = -delta.clip(upper=0)
 
-    avg_gain = gain.rolling(window=14, min_periods=14).mean()
-    avg_loss = loss.rolling(window=14, min_periods=14).mean()
+    avg_gain = gain.rolling(window=period, min_periods=period).mean()
+    avg_loss = loss.rolling(window=period, min_periods=period).mean()
 
-    # Avoid division by zero
-    rs = avg_gain / avg_loss.replace(0, np.nan)
+    rs = avg_gain / avg_loss
     rsi = 100 - (100 / (1 + rs))
-    return rsi.fillna(0)
+    return rsi
 
 
-# ---------------------------
-# 📘 Signal Generator
-# ---------------------------
-def generate_signal(df: pd.DataFrame) -> str:
-    """
-    Generates BUY/SELL/WATCH signals based on EMA200 and RSI14 strategy.
+# --------------------------------------------
+# ✅ Calculate EMA (modular, standalone)
+# --------------------------------------------
+def calculate_ema(close_series: pd.Series, span: int = 200) -> pd.Series:
+    """Compute EMA from a pandas Series of close prices."""
+    return close_series.ewm(span=span, adjust=False).mean()
 
-    Rules:
-        - BUY  : Price > EMA200 and RSI14 < 70
-        - SELL : Price < EMA200 and RSI14 > 30
-        - WATCH: Otherwise
 
-    Parameters
-    ----------
-    df : pd.DataFrame
-        DataFrame with 'Close', 'EMA200', and 'RSI14' columns.
+# --------------------------------------------
+# ✅ Analyze stock logic (unchanged core)
+# --------------------------------------------
+def analyze_stock(df: pd.DataFrame):
+    """Perform EMA + RSI analysis and return latest metrics."""
+    df["EMA200"] = calculate_ema(df["Close"], span=200)
+    df["RSI14"] = calculate_rsi(df["Close"], period=14)
 
-    Returns
-    -------
-    str
-        One of "BUY", "SELL", or "WATCH".
-    """
-    try:
-        close = df["Close"].iloc[-1]
-        ema200 = df["EMA200"].iloc[-1]
-        rsi = df["RSI14"].iloc[-1]
-    except IndexError:
-        return "WATCH"  # Empty or malformed DataFrame
+    last = df.iloc[-1]
+    cmp_ = float(last["Close"])
+    ema200 = float(last["EMA200"])
+    rsi14 = float(last["RSI14"])
 
-    if close > ema200 and rsi < 70:
-        return "BUY"
-    elif close < ema200 and rsi > 30:
-        return "SELL"
-    else:
-        return "WATCH"
+    signal = "Neutral"
+    condition_desc = None
+
+    if cmp_ > ema200 and rsi14 < 30:
+        signal = "🟢 BUY"
+        condition_desc = "RSI < 30 and CMP above EMA200"
+
+    elif cmp_ < ema200 and rsi14 > 70:
+        signal = "🔴 SELL"
+        condition_desc = "RSI > 70 and CMP below EMA200"
+
+    elif abs(cmp_ - ema200) / cmp_ <= 0.02 and 30 <= rsi14 <= 40:
+        signal = "🟡 WATCH"
+        condition_desc = "EMA200 within ±2% of CMP & RSI between 30–40"
+
+    return cmp_, ema200, rsi14, signal, condition_desc
