@@ -376,12 +376,6 @@ except Exception:
     pass
 
 # -----------------------
-# Maintain Alert History
-# -----------------------
-if "alert_history" not in st.session_state:
-    st.session_state["alert_history"] = []
-
-# -----------------------
 # Run Scan (with conditional debug output)
 # -----------------------
 def run_scan():
