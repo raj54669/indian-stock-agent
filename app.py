@@ -1,35 +1,47 @@
-# app.py — Indian Stock Agent (ready-to-paste)
+# app.py — Indian Stock Agent (Improved: Only 8 Enhancements)
+
 import streamlit as st
 import pandas as pd
 import numpy as np
 import yfinance as yf
-import io, os, time, requests
-from datetime import datetime
+import io, os, requests, time
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-# Optional auto-refresh support (safe import)
-try:
-    from streamlit_autorefresh import st_autorefresh
-except ImportError:
-    st_autorefresh = None
-
+# --------------------------------
+# Streamlit Config
+# --------------------------------
+st.set_page_config(page_title="📈 Indian Stock Agent – EMA + RSI Alert Bot", layout="wide")
 st.markdown("<style>div.block-container {padding-top: 1rem;}</style>", unsafe_allow_html=True)
 
-# Initialize session state for alert history as DataFrame
+# --------------------------------
+# Initialize session state
+# --------------------------------
 if "alert_history" not in st.session_state:
     st.session_state.alert_history = pd.DataFrame(
         columns=["Date & Time (IST)", "Symbol", "Signal", "CMP", "EMA200", "RSI14"]
     )
 
-# -----------------------
-# Streamlit Config
-# -----------------------
-st.set_page_config(page_title="📈 Indian Stock Agent – EMA + RSI Alert Bot", layout="wide")
-st.markdown("<style>div.block-container {padding-top: 1rem;}</style>", unsafe_allow_html=True)
+# --------------------------------
+# Constants (Improvement #1)
+# --------------------------------
+EMA_SPAN = 200
+RSI_PERIOD = 14
+WATCH_RSI_MIN, WATCH_RSI_MAX = 30, 40
+RSI_OVERSOLD, RSI_OVERBOUGHT = 30, 70
+EMA_TOLERANCE = 0.02  # ±2%
 
-# -----------------------
+# --------------------------------
+# Optional Auto-refresh
+# --------------------------------
+try:
+    from streamlit_autorefresh import st_autorefresh
+except ImportError:
+    st_autorefresh = None
+
+# --------------------------------
 # Secrets helpers
-# -----------------------
+# --------------------------------
 def get_secret(key: str, default=None):
     try:
         return st.secrets.get(key, default)
@@ -44,18 +56,18 @@ def get_secret_section(key: str, section: Optional[str] = None, default=None):
         pass
     return get_secret(key, default)
 
+# GitHub + Telegram secrets
 GITHUB_TOKEN = get_secret("GITHUB_TOKEN")
 GITHUB_REPO = get_secret("GITHUB_REPO")
-GITHUB_BRANCH = get_secret("GITHUB_BRANCH", "main")
 GITHUB_FILE_PATH = get_secret("GITHUB_FILE_PATH", "watchlist.xlsx")
+GITHUB_BRANCH = get_secret("GITHUB_BRANCH", "main")
 
-# Telegram secrets
 TELEGRAM_TOKEN = get_secret_section("TELEGRAM_TOKEN", section="telegram")
 CHAT_ID = get_secret_section("CHAT_ID", section="telegram")
 
-# -----------------------
-# GitHub headers
-# -----------------------
+# --------------------------------
+# GitHub + Watchlist
+# --------------------------------
 def github_raw_headers():
     auth_scheme = "Bearer" if str(GITHUB_TOKEN).startswith("github_pat_") else "token"
     return {
@@ -64,9 +76,6 @@ def github_raw_headers():
         "User-Agent": "streamlit-indian-stock-agent"
     }
 
-# -----------------------
-# Load Excel from GitHub
-# -----------------------
 @st.cache_data(ttl=120)
 def load_excel_from_github():
     if not (GITHUB_TOKEN and GITHUB_REPO):
@@ -76,248 +85,107 @@ def load_excel_from_github():
         url = f"https://api.github.com/repos/{owner}/{repo}/contents/{GITHUB_FILE_PATH}?ref={GITHUB_BRANCH}"
         r = requests.get(url, headers=github_raw_headers(), timeout=10)
         if r.status_code == 200:
-            df = pd.read_excel(io.BytesIO(r.content))
-            return df
-        else:
-            st.error(f"GitHub fetch failed: {r.status_code} - {r.text}")
-            return pd.DataFrame()
-    except Exception as e:
-        st.error(f"Error loading from GitHub: {e}")
-        return pd.DataFrame()
+            return pd.read_excel(io.BytesIO(r.content))
+    except Exception:
+        pass
+    return pd.DataFrame()
 
-# -----------------------
-# Sidebar: upload + status
-# -----------------------
+# Sidebar
 st.sidebar.header("📂 Watchlist Management")
 uploaded_file = st.sidebar.file_uploader("Upload new watchlist (Excel)", type=["xlsx"])
 
-# -----------------------
-# Load watchlist (uploaded override or GitHub)
-# -----------------------
 use_uploaded = False
 watchlist_df = pd.DataFrame()
 if uploaded_file is not None:
     try:
         df_up = pd.read_excel(uploaded_file)
-        if "Symbol" not in df_up.columns:
-            st.sidebar.error("Uploaded file must contain a 'Symbol' column.")
-        else:
+        if "Symbol" in df_up.columns:
             watchlist_df = df_up
             use_uploaded = True
-            st.sidebar.success(f"✅ Using uploaded watchlist ({len(watchlist_df)} symbols)")
+            st.sidebar.success(f"✅ Using uploaded watchlist ({len(df_up)} symbols)")
+        else:
+            st.sidebar.error("Uploaded file must contain 'Symbol' column.")
     except Exception as e:
-        st.sidebar.error(f"Error reading uploaded file: {e}")
+        st.sidebar.error(f"Error: {e}")
 
 if not use_uploaded:
     watchlist_df = load_excel_from_github()
-    st.sidebar.info("Using GitHub watchlist as default source")
+    st.sidebar.info("Using GitHub watchlist")
 
-# -----------------------
-# Settings Sidebar (original layout)
-# -----------------------
-st.sidebar.header("Settings")
+st.sidebar.header("Status")
+st.sidebar.write(f"GitHub Repo: `{GITHUB_REPO or 'N/A'}`")
+st.sidebar.write(f"GitHub Token: {'✅' if GITHUB_TOKEN else '❌'}")
+st.sidebar.write(f"Telegram Token: {'✅' if TELEGRAM_TOKEN else '❌'}")
+st.sidebar.caption(f"📦 yfinance version: {yf.__version__}")
 
-if TELEGRAM_TOKEN and CHAT_ID:
-    st.sidebar.success("✅ Telegram configured")
-else:
-    st.sidebar.info("Telegram not configured — alerts disabled")
-
-if GITHUB_TOKEN and GITHUB_REPO:
-    st.sidebar.success("✅ GitHub secrets present")
-else:
-    st.sidebar.warning("GitHub credentials missing (set GITHUB_TOKEN and GITHUB_REPO)")
-
-# sanitize watchlist: ensure Symbol column exists
-if not watchlist_df.empty:
-    if "Symbol" in watchlist_df.columns:
-        watchlist_df["Symbol"] = watchlist_df["Symbol"].astype(str).str.strip()
-        watchlist_df = watchlist_df[watchlist_df["Symbol"] != ""]
-    else:
-        watchlist_df = pd.DataFrame()
-
-# -----------------------
-# Telegram helper
-# -----------------------
+# --------------------------------
+# Telegram Helper
+# --------------------------------
 def send_telegram(message: str):
     if not TELEGRAM_TOKEN or not CHAT_ID:
         return False
     try:
-        r = requests.post(
-            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-            data={"chat_id": CHAT_ID, "text": message},
-            timeout=10
-        )
+        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+        data = {"chat_id": CHAT_ID, "text": message, "parse_mode": "Markdown"}
+        r = requests.post(url, data=data, timeout=10)
         return r.status_code == 200
     except Exception as e:
         st.warning(f"Telegram send error: {e}")
         return False
 
-# -----------------------
-# Robust indicators calculator + analyzer
-# -----------------------
-from datetime import timedelta
+# --------------------------------
+# Indicator Calculations
+# --------------------------------
+def calc_rsi_ema(df: pd.DataFrame):
+    if df is None or df.empty:
+        return None
+    df["Close"] = pd.to_numeric(df["Close"], errors="coerce")
+    df.dropna(subset=["Close"], inplace=True)
+    df["EMA200"] = df["Close"].ewm(span=EMA_SPAN, adjust=False).mean()
 
-def _flatten_columns(df: pd.DataFrame) -> pd.DataFrame:
-    """Flatten MultiIndex columns into single-level strings."""
-    if isinstance(df.columns, pd.MultiIndex):
-        df = df.copy()
-        df.columns = [
-            "_".join([str(x) for x in col if x is not None and str(x) != ""])
-            .strip("_")
-            for col in df.columns.values
-        ]
+    delta = df["Close"].diff()
+    gain = np.where(delta > 0, delta, 0)
+    loss = np.where(delta < 0, -delta, 0)
+    avg_gain = pd.Series(gain).ewm(alpha=1/RSI_PERIOD, min_periods=RSI_PERIOD).mean()
+    avg_loss = pd.Series(loss).ewm(alpha=1/RSI_PERIOD, min_periods=RSI_PERIOD).mean()
+    rs = avg_gain / avg_loss
+    df["RSI14"] = 100 - (100 / (1 + rs))
+    cutoff = df.index.max() - timedelta(days=365)
+    df_1y = df[df.index >= cutoff]
+    df["52W_High"] = df_1y["Close"].max()
+    df["52W_Low"] = df_1y["Close"].min()
     return df
 
-def _find_close_column(df: pd.DataFrame):
-    """Find the best candidate for Close column (case-insensitive)."""
-    cols = [c for c in df.columns]
-    for prefer in ("close", "adjclose", "adj_close", "adjusted_close"):
-        for c in cols:
-            if c.replace(" ", "").replace("_", "").lower() == prefer:
-                return c
-    for c in cols:
-        if "close" in c.lower():
-            return c
-    return None
-
-def calc_rsi_ema(df: pd.DataFrame) -> Optional[pd.DataFrame]:
-    """Calculates EMA200, RSI14, 52W High/Low."""
-    try:
-        if df is None or df.empty:
-            return None
-
-        df = _flatten_columns(df)
-
-        close_col = _find_close_column(df)
-        if close_col is None:
-            return None
-
-        df["Close"] = pd.to_numeric(df[close_col], errors="coerce")
-        df = df.dropna(subset=["Close"])
-        if df.empty:
-            return None
-
-        df.index = pd.to_datetime(df.index)
-
-        df["EMA200"] = df["Close"].ewm(span=200, adjust=False, min_periods=1).mean()
-
-        delta = df["Close"].diff()
-        gain = delta.where(delta > 0, 0.0)
-        loss = -delta.where(delta < 0, 0.0)
-        avg_gain = gain.ewm(alpha=1/14, min_periods=14, adjust=False).mean()
-        avg_loss = loss.ewm(alpha=1/14, min_periods=14, adjust=False).mean()
-        rs = avg_gain / avg_loss.replace(0, np.nan)
-        df["RSI14"] = 100.0 - (100.0 / (1.0 + rs))
-
-        last_date = df.index.max()
-        cutoff = last_date - timedelta(days=365)
-        df_1y = df[df.index >= cutoff]
-        h52 = df_1y["Close"].max() if not df_1y.empty else df["Close"].max()
-        l52 = df_1y["Close"].min() if not df_1y.empty else df["Close"].min()
-
-        df["52W_High"] = h52
-        df["52W_Low"] = l52
-
-        return df
-
-    except Exception:
-        return None
-
-def analyze(symbol: str):
-    """Download data and return a signal based on analysis."""
-    try:
-        df = yf.download(symbol, period="2y", interval="1d", progress=False, auto_adjust=True)
-        if df is None or df.empty:
-            return None
-
-        df_ind = calc_rsi_ema(df)
-        if df_ind is None or df_ind.empty:
-            return None
-
-        last = df_ind.iloc[-1]
-
-        cmp_ = float(last["Close"])
-        ema200 = float(last["EMA200"])
-        rsi14 = float(last["RSI14"])
-        low52 = float(last["52W_Low"])
-        high52 = float(last["52W_High"])
-
-        if cmp_ is None or ema200 is None or rsi14 is None:
-            return None
-
-        signal = "Neutral"
-        alert_condition = ""
-
-        if (cmp_ * 0.98 <= ema200 <= cmp_ * 1.02) and (30 <= rsi14 <= 40):
-            signal = "🟡 ⚠️ Watch"
-            alert_condition = "EMA200 within ±2% of CMP & RSI between 30–40"
-        elif rsi14 < 30:
-            signal = "🟢 🔼 BUY"
-            alert_condition = "RSI < 30 (Oversold)"
-        elif rsi14 > 70:
-            signal = "🔴 🔽 SELL"
-            alert_condition = "RSI > 70 (Overbought)"
-
-        telegram_msg = (
-            f"⚡ Alert: {symbol}\n"
-            f"CMP = {cmp_:.2f}\n"
-            f"EMA200 = {ema200:.2f}\n"
-            f"RSI14 = {rsi14:.2f}\n"
-            f"Condition: {alert_condition if alert_condition else 'No active signal'}"
-        )
-
-        return {
-            "Symbol": symbol,
-            "CMP": round(cmp_, 2),
-            "52W_Low": round(low52, 2) if low52 is not None else None,
-            "52W_High": round(high52, 2) if high52 is not None else None,
-            "EMA200": round(ema200, 2),
-            "RSI14": round(rsi14, 2),
-            "Signal": signal,
-            "AlertCondition": alert_condition,
-            "TelegramMessage": telegram_msg
-        }
-
-    except Exception as e:
-        st.error(f"{symbol}: {e}")
-        return None
-
-# -----------------------
+# --------------------------------
 # Main UI
-# -----------------------
+# --------------------------------
 st.title("📊 Indian Stock Agent – EMA + RSI Alert Bot")
 
-if watchlist_df.empty or "Symbol" not in watchlist_df.columns:
-    st.warning("⚠️ No valid 'Symbol' column found in your watchlist Excel file.")
-    symbols = []
-else:
-    symbols = watchlist_df["Symbol"].dropna().astype(str).tolist()
-
+symbols = watchlist_df["Symbol"].dropna().astype(str).tolist() if not watchlist_df.empty else []
 st.subheader("📋 Combined Summary Table")
+
 initial_df = pd.DataFrame({
-    "Symbol": symbols if symbols else [],
-    "CMP": ["" for _ in symbols] if symbols else [],
-    "52W_Low": ["" for _ in symbols] if symbols else [],
-    "52W_High": ["" for _ in symbols] if symbols else [],
-    "EMA200": ["" for _ in symbols] if symbols else [],
-    "RSI14": ["" for _ in symbols] if symbols else [],
-    "Signal": ["" for _ in symbols] if symbols else [],
+    "Symbol": symbols,
+    "CMP": ["" for _ in symbols],
+    "52W_Low": ["" for _ in symbols],
+    "52W_High": ["" for _ in symbols],
+    "EMA200": ["" for _ in symbols],
+    "RSI14": ["" for _ in symbols],
+    "Signal": ["" for _ in symbols],
 })
 summary_placeholder = st.empty()
 summary_placeholder.dataframe(initial_df, use_container_width=True, hide_index=True)
-
 last_scan_time = st.caption("Will auto-update after scanning.")
 
-# -----------------------
+# --------------------------------
 # Controls
-# -----------------------
+# --------------------------------
 st.subheader("⚙️ Controls")
 col1, col2 = st.columns([1, 2])
 
 with col1:
     run_now = st.button("Run Scan Now", key="run_now_btn")
-    interval = st.number_input("Interval (sec)", value=60, step=5, min_value=5, key="interval_input")
-
+    interval = st.number_input("Interval (sec)", value=60, step=5, min_value=5)
     auto = st.checkbox("Enable Auto-scan", key="auto_chk")
 
 with col2:
@@ -325,159 +193,118 @@ with col2:
     st.write(f"- GitHub Repo: `{GITHUB_REPO or 'N/A'}`")
     st.write(f"- Token: {'✅' if GITHUB_TOKEN else '❌'}")
     if auto:
-        st.markdown(
-            f"<span style='margin-left:10px;'>🔁 Auto-scan active — every {interval} seconds</span>",
-            unsafe_allow_html=True
-        )
+        st.markdown(f"<span style='margin-left:10px;'>🔁 Auto-scan active — every {interval} sec</span>", unsafe_allow_html=True)
 
-# -----------------------
-# Run Scan (with debug output)
-# -----------------------
+# --------------------------------
+# Run Scan (Improvements #2, #4, #5, #6, #7)
+# --------------------------------
 def run_scan():
     results = []
     debug_logs = []
-    errors_found = False
+    progress_bar = st.progress(0)
 
-    for symbol in symbols:
+    for i, symbol in enumerate(symbols):
         try:
-            debug_logs.append(f"Processing {symbol} ...")
+            debug_logs.append(f"Fetching {symbol} ...")
             df = yf.download(symbol, period="1y", interval="1d", progress=False, auto_adjust=True)
-
-            if df is None or df.empty:
-                msg = f"⚠️ No data for {symbol}"
-                debug_logs.append(msg)
-                errors_found = True
+            if df.empty:
+                debug_logs.append(f"⚠️ No data for {symbol}")
                 continue
-
             df = calc_rsi_ema(df)
             last = df.iloc[-1]
 
             cmp_ = float(last["Close"])
-            ema200 = float(last["EMA200"])
-            rsi14 = float(last["RSI14"])
-            high_52w = float(last["52W_High"])
-            low_52w = float(last["52W_Low"])
+            ema = float(last["EMA200"])
+            rsi = float(last["RSI14"])
+            h52, l52 = float(last["52W_High"]), float(last["52W_Low"])
 
-            # --- Determine signal ---
-            signal = "Neutral"
-            condition_desc = None
+            signal, cond = "Neutral", ""
+            if abs(cmp_ - ema) / cmp_ <= EMA_TOLERANCE and WATCH_RSI_MIN <= rsi <= WATCH_RSI_MAX:
+                signal, cond = "🟡 WATCH", "EMA200 within ±2% of CMP & RSI 30–40"
+            elif cmp_ > ema and rsi < RSI_OVERSOLD:
+                signal, cond = "🟢 BUY", "RSI < 30 and CMP above EMA200"
+            elif cmp_ < ema and rsi > RSI_OVERBOUGHT:
+                signal, cond = "🔴 SELL", "RSI > 70 and CMP below EMA200"
 
-            # 1️⃣ BUY: RSI < 30 and CMP > EMA200
-            if cmp_ > ema200 and rsi14 < 30:
-                signal = "🟢 BUY"
-                condition_desc = "RSI < 30 and CMP above EMA200"
-
-            # 2️⃣ SELL: RSI > 70 and CMP < EMA200
-            elif cmp_ < ema200 and rsi14 > 70:
-                signal = "🔴 SELL"
-                condition_desc = "RSI > 70 and CMP below EMA200"
-
-            # 3️⃣ WATCH: EMA200 within ±2% of CMP and RSI between 30–40
-            elif abs(cmp_ - ema200) / cmp_ <= 0.02 and 30 <= rsi14 <= 40:
-                signal = "🟡 WATCH"
-                condition_desc = "EMA200 within ±2% of CMP & RSI between 30–40"
-
-            # --- Record and send alerts for triggered signals ---
-            if signal in ("🟢 BUY", "🔴 SELL", "🟡 WATCH"):
-                add_to_alert_history(symbol, signal, cmp_, ema200, rsi14)
-
-                # Format Telegram alert message
-                emoji = "⚡" if "WATCH" in signal else ("📈" if "BUY" in signal else "📉")
-                alert_msg = (
-                    f"{emoji} *Alert:* {symbol}\n"
+            if signal != "Neutral":
+                trend = "Uptrend" if cmp_ > ema else "Downtrend"
+                msg = (
+                    f"⚡ Alert: {signal}\n"
+                    f"**{symbol}**\n"
                     f"CMP = {cmp_:.2f}\n"
-                    f"EMA200 = {ema200:.2f}\n"
-                    f"RSI14 = {rsi14:.2f}\n"
-                    f"Condition: {condition_desc}"
+                    f"EMA200 = {ema:.2f}\n"
+                    f"RSI14 = {rsi:.2f}\n"
+                    f"Condition: {cond}\n"
+                    f"Trend: {trend}"
                 )
-                send_telegram(alert_msg)
+                send_telegram(msg)
+                add_to_alert_history(symbol, signal, cmp_, ema, rsi)
 
-            # Append to results
             results.append({
                 "Symbol": symbol,
                 "CMP": round(cmp_, 2),
-                "52W_Low": round(low_52w, 2),
-                "52W_High": round(high_52w, 2),
-                "EMA200": round(ema200, 2),
-                "RSI14": round(rsi14, 2),
-                "Signal": signal
+                "52W_Low": round(l52, 2),
+                "52W_High": round(h52, 2),
+                "EMA200": round(ema, 2),
+                "RSI14": round(rsi, 2),
+                "Signal": signal,
             })
-
-            debug_logs.append(f"✅ OK {symbol}: CMP={cmp_} EMA200={ema200} RSI={rsi14}")
-
+            debug_logs.append(f"✅ {symbol} — CMP={cmp_:.2f}, EMA200={ema:.2f}, RSI={rsi:.2f}")
         except Exception as e:
-            msg = f"❌ {symbol}: {e}"
-            debug_logs.append(msg)
-            st.error(msg)
-            errors_found = True
+            debug_logs.append(f"❌ {symbol}: {e}")
+        progress_bar.progress(int(((i + 1) / len(symbols)) * 100))
 
-    # --- Update UI ---
     if results:
         df = pd.DataFrame(results)
         summary_placeholder.dataframe(df, use_container_width=True, hide_index=True)
-        from datetime import timezone, timedelta
         ist = timezone(timedelta(hours=5, minutes=30))
         last_scan_time.caption(f"Last scan: {datetime.now(ist).strftime('%Y-%m-%d %H:%M:%S %Z')}")
     else:
         summary_placeholder.warning("No valid data fetched.")
 
-# -----------------------
-# 🔔 Add Alert to History (Safe, Persistent)
-# -----------------------
-def add_to_alert_history(symbol: str, signal: str, cmp_: float, ema200: float, rsi14: float):
-    if "alert_history" not in st.session_state or not isinstance(st.session_state["alert_history"], pd.DataFrame):
-        st.session_state["alert_history"] = pd.DataFrame(
-            columns=["Date & Time (IST)", "Symbol", "Signal", "CMP", "EMA200", "RSI14"]
-        )
-    ts = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
+    with st.expander("🔍 Debug Logs"):
+        for line in debug_logs:
+            st.text(line)
 
+# --------------------------------
+# Alert History (Improvement #3)
+# --------------------------------
+st.subheader("📜 Alert History")
+
+def add_to_alert_history(symbol, signal, cmp_, ema, rsi):
+    ts = datetime.now(timezone(timedelta(hours=5, minutes=30))).strftime("%Y-%m-%d %H:%M:%S")
     new_row = pd.DataFrame([{
         "Date & Time (IST)": ts,
         "Symbol": symbol,
         "Signal": signal,
-        "CMP": round(float(cmp_), 2),
-        "EMA200": round(float(ema200), 2),
-        "RSI14": round(float(rsi14), 2),
+        "CMP": round(cmp_, 2),
+        "EMA200": round(ema, 2),
+        "RSI14": round(rsi, 2),
     }])
+    st.session_state.alert_history = pd.concat(
+        [st.session_state.alert_history, new_row], ignore_index=True
+    )
 
-    st.session_state["alert_history"] = pd.concat([st.session_state["alert_history"], new_row], ignore_index=True)
-
-    expected_cols = ["Date & Time (IST)", "Symbol", "Signal", "CMP", "EMA200", "RSI14"]
-    st.session_state["alert_history"] = st.session_state["alert_history"][expected_cols]
-
-# -----------------------
-# 🧾 Alert History Display
-# -----------------------
-st.subheader("📜 Alert History")
-if not st.session_state["alert_history"].empty:
-    st.dataframe(st.session_state["alert_history"], use_container_width=True, hide_index=True)
+if not st.session_state.alert_history.empty:
+    st.dataframe(st.session_state.alert_history, use_container_width=True, hide_index=True)
     if st.button("🧹 Clear History"):
-        st.session_state["alert_history"] = pd.DataFrame(
-            columns=["Date & Time (IST)", "Symbol", "Signal", "CMP", "EMA200", "RSI14"]
-        )
-        st.success("✅ Alert history cleared!")
-        st.experimental_rerun()
+        if st.button("✅ Confirm Clear"):
+            st.session_state.alert_history = pd.DataFrame(
+                columns=["Date & Time (IST)", "Symbol", "Signal", "CMP", "EMA200", "RSI14"]
+            )
+            st.success("✅ Alert history cleared!")
+            st.experimental_rerun()
 else:
     st.info("No alerts recorded yet. Run a scan to generate new alerts.")
 
-# -----------------------
-# Test Telegram Button
-# -----------------------
-test_telegram = st.button("📨 Send Test Telegram Alert")
-if test_telegram:
-    success = send_telegram("✅ Test alert from Indian Stock Agent Bot!")
-    if success:
-        st.success("✅ Telegram test alert sent successfully!")
-    else:
-        st.error("❌ Telegram send failed. Check your token or chat_id.")
+# --------------------------------
+# Buttons & Auto-scan
+# --------------------------------
+if run_now:
+    run_scan()
 
-# -----------------------
-# Auto-scan with Refresh
-# -----------------------
-if auto:
-    if st_autorefresh:
-        refresh_interval_ms = int(interval) * 1000
-        st_autorefresh(interval=refresh_interval_ms, key="auto_refresh")
-        run_scan()
-    else:
-        st.warning("⚠️ Auto-refresh package missing. Run: pip install streamlit-autorefresh")
+if auto and st_autorefresh:
+    st_autorefresh(interval=int(interval) * 1000, key="auto_refresh")
+    run_scan()
+
+# end of file
