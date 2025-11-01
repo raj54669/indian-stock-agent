@@ -1,16 +1,22 @@
-# Indian Stock Monitor (Cloud)
+# 📈 Indian Stock Agent – EMA + RSI Alert Bot
 
-Files:
-- agent.py : runs as a background worker to check triggers and send Telegram alerts
-- dashboard.py : Streamlit web dashboard showing live stats
-- watchlist.txt : list of NSE tickers (one per line)
+A modular, production-ready Streamlit app for Indian stock market scanning, combining:
+- EMA200 and RSI14 technical indicators  
+- 52-week high/low tracking  
+- Telegram alert notifications  
+- GitHub-based Excel watchlist management (with upload + commit history)  
+- Auto-scan mode (enabled by default)  
 
-Deploy:
-1. Push repo to GitHub.
-2. Sign up / login to Render, connect GitHub.
-3. Create Web Service for dashboard: run `streamlit run dashboard.py --server.port $PORT`
-4. Create Background Worker for agent: run `python agent.py`
-5. On both services, set environment variables:
-   - TELEGRAM_TOKEN
-   - CHAT_ID
-   - (optional) CHECK_INTERVAL
+---
+
+## 🚀 Features
+✅ Load watchlist directly from GitHub  
+✅ Upload Excel to replace GitHub file (creates new commit each time)  
+✅ Auto-scan and Telegram alerts for BUY, SELL, WATCH signals  
+✅ Session-based alert history  
+✅ Clean UI with auto-hide clear history button  
+✅ Modular code structure for easy maintenance  
+
+---
+
+## 📁 Project Structure
