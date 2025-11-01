@@ -88,4 +88,11 @@ def handle_file_upload(upload_callback):
     upload_callback : callable
         Function to call with the uploaded file object.
     """
-    uploaded_file = st.file_uploader("📂 Upload new
+    uploaded_file = st.file_uploader("📂 Upload new watchlist (Excel)", type=["xlsx"])
+    if uploaded_file is not None:
+        st.info("⏫ Uploading new file to GitHub...")
+        success = upload_callback(uploaded_file)
+        if success:
+            st.toast("✅ Watchlist replaced successfully!")
+        else:
+            st.error("🚫 Upload failed.")
