@@ -177,7 +177,7 @@ if uploaded_file is not None:
 
             # --- 🧩 NEW: Auto-replace file on GitHub ---
             file_bytes = uploaded_file.getvalue()
-            success = upload_to_github(file_bytes)
+            success = upload_to_github(file_bytes,repo=GITHUB_REPO,path=GITHUB_FILE_PATH,branch=GITHUB_BRANCH,token=GITHUB_TOKEN,)
             if success:
                 st.sidebar.info("🔁 GitHub watchlist.xlsx updated successfully.")
             else:
