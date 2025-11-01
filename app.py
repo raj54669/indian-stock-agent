@@ -107,59 +107,51 @@ def load_excel_from_github():
     except Exception as e:
         st.error(f"Error loading from GitHub: {e}")
         return pd.DataFrame()
-
-
+# -----------------------
+# Upload Excel to GitHub
+# -----------------------
 import base64
 import json
+import requests
 
-def upload_to_github(file_bytes, filename="watchlist.xlsx"):
+def upload_to_github_file(file_bytes, repo, path, branch, token, commit_message="Auto-update watchlist.xlsx"):
     """
-    Replace or create watchlist.xlsx in GitHub repo.
-    Works with proper repo/token credentials.
+    Uploads or replaces a file in a GitHub repo using a fine-grained token.
+    Returns True if successful, else False and an error message.
     """
-    if not (GITHUB_TOKEN and GITHUB_REPO):
-        st.error("Missing GitHub credentials. Please set GITHUB_TOKEN and GITHUB_REPO.")
-        return False
-
     try:
-        owner, repo = GITHUB_REPO.split("/", 1)
-        url = f"https://api.github.com/repos/{owner}/{repo}/contents/{GITHUB_FILE_PATH}"
+        owner, repo_name = repo.split("/")
+        url = f"https://api.github.com/repos/{owner}/{repo_name}/contents/{path}"
 
-        # --- Step 1: Get SHA if file exists ---
+        # Check if file exists (get SHA)
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json",
+        }
+        r = requests.get(url, headers=headers, timeout=10)
         sha = None
-        get_resp = requests.get(url, headers=github_raw_headers(), timeout=10)
-        if get_resp.status_code == 200:
-            data = get_resp.json()
-            sha = data.get("sha")
+        if r.status_code == 200:
+            sha = r.json().get("sha", None)
 
-        # --- Step 2: Prepare encoded content ---
-        encoded_content = base64.b64encode(file_bytes).decode("utf-8")
-
+        # Prepare upload payload
+        encoded = base64.b64encode(file_bytes).decode("utf-8")
         payload = {
-            "message": "🔄 Update watchlist.xlsx via Streamlit upload",
-            "content": encoded_content,
-            "branch": GITHUB_BRANCH,
+            "message": commit_message,
+            "content": encoded,
+            "branch": branch
         }
         if sha:
-            payload["sha"] = sha
+            payload["sha"] = sha  # Required if file already exists
 
-        # --- Step 3: PUT upload to GitHub ---
-        put_resp = requests.put(url, headers=github_raw_headers(), data=json.dumps(payload), timeout=15)
-
-        if put_resp.status_code in (200, 201):
-            st.sidebar.success("✅ Successfully replaced watchlist.xlsx in GitHub repo.")
-            return True
+        # Upload file
+        r = requests.put(url, headers=headers, data=json.dumps(payload), timeout=15)
+        if r.status_code in (200, 201):
+            return True, f"✅ Uploaded to GitHub ({path})"
         else:
-            st.sidebar.error(f"❌ GitHub upload failed ({put_resp.status_code}): {put_resp.text}")
-            return False
+            return False, f"❌ GitHub upload failed: {r.status_code} - {r.text}"
 
-    except json.JSONDecodeError:
-        st.sidebar.error("❌ JSON decoding failed. The GitHub API response was invalid.")
-        return False
     except Exception as e:
-        st.sidebar.error(f"❌ GitHub upload error: {e}")
-        return False
-
+        return False, f"❌ Upload error: {e}"
 
 # -----------------------
 # Sidebar: upload + status  (kept exactly as original)
